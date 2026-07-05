@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/samuelloranger/board/internal/mcpserver"
 	"github.com/samuelloranger/board/internal/setup"
 	"github.com/samuelloranger/board/internal/store"
+	"github.com/samuelloranger/board/internal/web"
 )
 
 func dbPath() string {
@@ -204,9 +206,18 @@ func cmdNote(args []string, stdout io.Writer) error {
 	return nil
 }
 
-// Temporary stub — replaced in Task 12 (serve).
 func runServe(args []string, stdout io.Writer) error {
-	return fmt.Errorf("serve: not yet implemented")
+	addr := "127.0.0.1:7420"
+	if len(args) == 2 && args[0] == "--addr" {
+		addr = args[1]
+	}
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	fmt.Fprintf(stdout, "board web UI: http://%s\n", addr)
+	return http.ListenAndServe(addr, web.Handler(st))
 }
 
 func runSetup(args []string, stdout io.Writer) error {
