@@ -78,10 +78,11 @@ func insertTags(tx *sql.Tx, taskID int64, tags []string) error {
 func (s *Store) GetTask(id int64) (*Task, error) {
 	var tk Task
 	err := s.db.QueryRow(
-		`SELECT id, title, description, status, project, priority, due_date, archived, created_at, updated_at
+		`SELECT id, title, description, status, project, priority, due_date, archived,
+		        handoff_to, handoff_reason, created_at, updated_at
 		 FROM tasks WHERE id = ?`, id,
 	).Scan(&tk.ID, &tk.Title, &tk.Description, &tk.Status, &tk.Project, &tk.Priority,
-		&tk.DueDate, &tk.Archived, &tk.CreatedAt, &tk.UpdatedAt)
+		&tk.DueDate, &tk.Archived, &tk.HandoffTo, &tk.HandoffReason, &tk.CreatedAt, &tk.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -274,7 +275,9 @@ func (s *Store) MoveTask(id int64, status string) (*Task, error) {
 	if !validStatus(status) {
 		return nil, fmt.Errorf("invalid status %q", status)
 	}
-	res, err := s.db.Exec(`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`, status, now(), id)
+	res, err := s.db.Exec(
+		`UPDATE tasks SET status = ?, handoff_to = NULL, handoff_reason = NULL, updated_at = ? WHERE id = ?`,
+		status, now(), id)
 	if err != nil {
 		return nil, err
 	}

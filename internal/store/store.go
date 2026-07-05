@@ -18,18 +18,20 @@ type Store struct {
 }
 
 type Task struct {
-	ID          int64    `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description,omitempty"`
-	Status      string   `json:"status"`
-	Project     *string  `json:"project,omitempty"`
-	Priority    *string  `json:"priority,omitempty"`
-	DueDate     *string  `json:"due_date,omitempty"`
-	Archived    bool     `json:"archived"`
-	Tags        []string `json:"tags"`
-	Notes       []Note   `json:"notes,omitempty"`
-	CreatedAt   string   `json:"created_at"`
-	UpdatedAt   string   `json:"updated_at"`
+	ID            int64    `json:"id"`
+	Title         string   `json:"title"`
+	Description   string   `json:"description,omitempty"`
+	Status        string   `json:"status"`
+	Project       *string  `json:"project,omitempty"`
+	Priority      *string  `json:"priority,omitempty"`
+	DueDate       *string  `json:"due_date,omitempty"`
+	Archived      bool     `json:"archived"`
+	HandoffTo     *string  `json:"handoff_to,omitempty"`
+	HandoffReason *string  `json:"handoff_reason,omitempty"`
+	Tags          []string `json:"tags"`
+	Notes         []Note   `json:"notes,omitempty"`
+	CreatedAt     string   `json:"created_at"`
+	UpdatedAt     string   `json:"updated_at"`
 }
 
 type Note struct {
@@ -106,6 +108,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	for _, col := range []string{"handoff_to", "handoff_reason"} {
+		// ADD COLUMN is a no-op-safe migration; ignore "duplicate column" errors.
+		_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN " + col + " TEXT")
 	}
 	return &Store{db: db}, nil
 }
