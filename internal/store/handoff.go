@@ -31,14 +31,15 @@ func (s *Store) Resume(project *string) (*ResumeResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Handoffs: any non-archived task in scope with handoff_to set.
+	// Handoffs: any non-archived, non-done task in scope with handoff_to set.
+	// Done tasks never represent pending work to pick up.
 	all, err := s.ListTasks(ListFilter{Project: project})
 	if err != nil {
 		return nil, err
 	}
 	handoffs := []*Task{}
 	for _, tk := range all {
-		if tk.HandoffTo != nil {
+		if tk.HandoffTo != nil && tk.Status != "done" {
 			handoffs = append(handoffs, tk)
 		}
 	}

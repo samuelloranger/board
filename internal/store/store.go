@@ -105,6 +105,10 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// modernc.org/sqlite allows only one writer at a time; cap the pool at a
+	// single connection so concurrent write handlers serialize instead of
+	// racing separate connections into SQLITE_BUSY.
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)

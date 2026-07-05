@@ -146,7 +146,9 @@ func (s *Store) ListTasks(f ListFilter) ([]*Task, error) {
 	q := `SELECT id FROM tasks WHERE 1=1`
 	var args []any
 	if f.Project != nil {
-		q += ` AND project = ?`
+		// Global (NULL-project) tasks are pinned into every project-scoped
+		// view, so a task created outside any repo is never invisible.
+		q += ` AND (project = ? OR project IS NULL)`
 		args = append(args, *f.Project)
 	}
 	if f.Status != nil {
@@ -275,14 +277,26 @@ func (s *Store) MoveTask(id int64, status string) (*Task, error) {
 	if !validStatus(status) {
 		return nil, fmt.Errorf("invalid status %q", status)
 	}
-	res, err := s.db.Exec(
-		`UPDATE tasks SET status = ?, handoff_to = NULL, handoff_reason = NULL, updated_at = ? WHERE id = ?`,
-		status, now(), id)
+	var current string
+	err := s.db.QueryRow(`SELECT status FROM tasks WHERE id = ?`, id).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil, ErrNotFound
+	// Only a real status change consumes a handoff (the receiver picking the
+	// task up). A no-op re-move must not silently wipe handoff context.
+	if current == status {
+		if _, err := s.db.Exec(`UPDATE tasks SET updated_at = ? WHERE id = ?`, now(), id); err != nil {
+			return nil, err
+		}
+		return s.GetTask(id)
+	}
+	if _, err := s.db.Exec(
+		`UPDATE tasks SET status = ?, handoff_to = NULL, handoff_reason = NULL, updated_at = ? WHERE id = ?`,
+		status, now(), id); err != nil {
+		return nil, err
 	}
 	s.emit(&id, "moved", "→ "+status)
 	return s.GetTask(id)

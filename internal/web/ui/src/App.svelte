@@ -23,6 +23,10 @@
   let addTitle = $state("");
   let addPriority = $state("");
   let unseen = $state(0);
+  let detail = $state(null);
+  let editing = $state(false);
+  let edit = $state({ title: "", description: "", priority: "", due_date: "", tags: "" });
+  let noteBody = $state("");
 
   function applyTheme(t) {
     theme = t;
@@ -60,6 +64,57 @@
     await load();
   }
 
+  function findTask(id) {
+    for (const c of COLUMNS) {
+      const f = (board[c.key] ?? []).find((t) => t.id === id);
+      if (f) return f;
+    }
+    return null;
+  }
+  function statusLabel(s) { return (COLUMNS.find((c) => c.key === s) || {}).label ?? s; }
+  function openDetail(t) { detail = t; editing = false; noteBody = ""; }
+  function closeDetail() { detail = null; editing = false; }
+  function startEdit() {
+    edit = {
+      title: detail.title ?? "",
+      description: detail.description ?? "",
+      priority: detail.priority ?? "",
+      due_date: detail.due_date ?? "",
+      tags: (detail.tags ?? []).join(", "),
+    };
+    editing = true;
+  }
+  async function saveEdit() {
+    const title = edit.title.trim();
+    if (!title) return;
+    const tags = edit.tags.split(",").map((s) => s.trim()).filter(Boolean);
+    await fetch(`/api/tasks/${detail.id}/update`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title, description: edit.description,
+        priority: edit.priority, due_date: edit.due_date, tags,
+      }),
+    });
+    await load();
+    detail = findTask(detail.id);
+    editing = false;
+  }
+  async function addNote() {
+    const body = noteBody.trim();
+    if (!body) return;
+    await fetch(`/api/tasks/${detail.id}/note`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body }),
+    });
+    noteBody = "";
+    await load();
+    detail = findTask(detail.id);
+  }
+  async function moveFromDetail(status) {
+    await move(detail.id, status);
+    detail = findTask(detail.id);
+  }
+
   function onDragStart(e, id) { e.dataTransfer.setData("id", String(id)); e.dataTransfer.effectAllowed = "move"; }
   function onDrop(e, status) {
     e.preventDefault(); dragOver = null;
@@ -71,23 +126,72 @@
     try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
     catch { return ""; }
   }
+  function fmtDateTime(iso) {
+    try { return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
+    catch { return ""; }
+  }
+  // Relative "3m", "2h", "4d" for compact activity timestamps.
+  function fmtAgo(iso) {
+    try {
+      const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+      if (s < 60) return "now";
+      if (s < 3600) return Math.floor(s / 60) + "m";
+      if (s < 86400) return Math.floor(s / 3600) + "h";
+      return Math.floor(s / 86400) + "d";
+    } catch { return ""; }
+  }
+  // Resolve an event's task title from the current board, when it has one.
+  function eventTitle(e) {
+    if (!e.task_id) return "";
+    const t = findTask(e.task_id);
+    return t ? t.title : "";
+  }
   const eventKindLabel = { created: "created", moved: "moved", note: "note", handoff: "handoff", archived: "archived", unarchived: "restored", updated: "updated", deleted: "deleted", tool: "tool", session: "session" };
+  const eventKindVerb = {
+    created: "Created", moved: "Moved", note: "Note on", handoff: "Handed off",
+    archived: "Archived", unarchived: "Restored", updated: "Updated", deleted: "Deleted",
+    tool: "Tool", session: "Session",
+  };
 
   $effect(() => {
     let saved = "dark";
     try { saved = localStorage.getItem("board-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"); } catch {}
     applyTheme(saved);
     load();
+
+    // While the server replays its backlog, events are historical: fill the
+    // feed but don't bump the unseen badge. The `synced` sentinel flips us live.
+    let syncing = true;
+    // Coalesce the per-event refetch — a 200-event backlog triggers one load,
+    // not 200.
+    let loadTimer = null;
+    const scheduleLoad = () => {
+      clearTimeout(loadTimer);
+      loadTimer = setTimeout(load, 120);
+    };
+
     const es = new EventSource("/api/events?since=0");
     es.onmessage = (m) => {
       events = [JSON.parse(m.data), ...events].slice(0, 60);
-      if (!showActivity) unseen = Math.min(unseen + 1, 99);
-      load();
+      if (!syncing && !showActivity) unseen = Math.min(unseen + 1, 99);
+      scheduleLoad();
     };
-    return () => es.close();
+    es.addEventListener("synced", () => { syncing = false; });
+    return () => { clearTimeout(loadTimer); es.close(); };
   });
 
-  function openActivity() { showActivity = true; unseen = 0; }
+  function toggleActivity() { showActivity = !showActivity; if (showActivity) unseen = 0; }
+
+  // Close the open card menu on any outside click, without a full-screen
+  // backdrop that would swallow clicks on other cards' menu buttons.
+  $effect(() => {
+    if (openMenu === null) return;
+    const onDocClick = (e) => {
+      if (!e.target.closest(".menu") && !e.target.closest(".menu-btn")) openMenu = null;
+    };
+    window.addEventListener("click", onDocClick);
+    return () => window.removeEventListener("click", onDocClick);
+  });
 </script>
 
 <!-- icon snippets -->
@@ -99,6 +203,7 @@
 {#snippet iconHandoff()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8l-4 4 4 4M3 12h13M17 16l4-4-4-4M21 12H8"/></svg>{/snippet}
 {#snippet iconClose()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>{/snippet}
 {#snippet iconCheck()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>{/snippet}
+{#snippet iconEdit()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>{/snippet}
 
 <header class="topbar">
   <div class="brand">
@@ -106,7 +211,7 @@
     <h1>board</h1>
   </div>
   <div class="actions">
-    <button class="icon-btn" onclick={openActivity} aria-label="Show activity">
+    <button class="icon-btn" onclick={toggleActivity} aria-label="Toggle activity">
       {@render iconActivity()}
       {#if unseen > 0}<span class="badge">{unseen}</span>{/if}
     </button>
@@ -161,11 +266,12 @@
         {#each board[c.key] ?? [] as t (t.id)}
           <article
             class="card"
+            class:menu-open={openMenu === t.id}
             draggable="true"
             ondragstart={(e) => onDragStart(e, t.id)}
           >
             <div class="card-top">
-              <p class="title">{t.title}</p>
+              <button class="title" onclick={() => openDetail(t)}>{t.title}</button>
               <button class="menu-btn" aria-label="Task actions" onclick={() => (openMenu = openMenu === t.id ? null : t.id)}>
                 {@render iconMore()}
               </button>
@@ -194,10 +300,6 @@
     </section>
   {/each}
 </main>
-
-{#if openMenu !== null}
-  <button class="backdrop-invisible" aria-label="Close menu" onclick={() => (openMenu = null)}></button>
-{/if}
 
 <!-- Add task modal -->
 {#if showAdd}
@@ -243,12 +345,104 @@
     <div class="feed">
       {#if events.length === 0}<div class="empty">No activity yet</div>{/if}
       {#each events as e (e.id)}
+        {@const et = eventTitle(e)}
         <div class="ev">
-          <span class="ev-kind k-{e.kind}">{eventKindLabel[e.kind] ?? e.kind}</span>
-          <span class="ev-detail">{e.detail}</span>
-          <span class="ev-time">{fmtTime(e.created_at)}</span>
+          <span class="ev-dot k-{e.kind}" aria-hidden="true"></span>
+          <div class="ev-body">
+            <div class="ev-line">
+              <span class="ev-kind k-{e.kind}">{eventKindLabel[e.kind] ?? e.kind}</span>
+              {#if et}
+                <button class="ev-task" onclick={() => { const t = findTask(e.task_id); if (t) { showActivity = false; openDetail(t); } }}>{et}</button>
+              {/if}
+              <span class="ev-time" title={fmtDateTime(e.created_at)}>{fmtAgo(e.created_at)}</span>
+            </div>
+            {#if e.detail}<div class="ev-detail">{e.detail}</div>{/if}
+          </div>
         </div>
       {/each}
+    </div>
+  </aside>
+{/if}
+
+<!-- Task detail drawer -->
+{#if detail}
+  <div class="scrim" onclick={closeDetail}></div>
+  <aside class="detail" role="dialog" aria-modal="true" aria-label="Task detail">
+    <div class="activity-head">
+      <div class="live">{@render iconMore()}<span>{editing ? "Edit task" : "Task"}</span></div>
+      <div class="head-actions">
+        {#if !editing}
+          <button class="icon-btn sm" aria-label="Edit task" onclick={startEdit}>{@render iconEdit()}</button>
+        {/if}
+        <button class="icon-btn sm" aria-label="Close" onclick={closeDetail}>{@render iconClose()}</button>
+      </div>
+    </div>
+    <div class="detail-body">
+      {#if editing}
+        <label class="field">
+          <span>Title</span>
+          <input bind:value={edit.title} onkeydown={(e) => { if (e.key === "Escape") editing = false; }} />
+        </label>
+        <label class="field">
+          <span>Description</span>
+          <textarea rows="5" bind:value={edit.description}></textarea>
+        </label>
+        <div class="field">
+          <span>Priority</span>
+          <div class="pri-seg">
+            {#each PRIORITIES as p}
+              <button class:sel={edit.priority === p.key} onclick={() => (edit.priority = p.key)}>{p.label}</button>
+            {/each}
+          </div>
+        </div>
+        <label class="field">
+          <span>Due date</span>
+          <input bind:value={edit.due_date} placeholder="YYYY-MM-DD" />
+        </label>
+        <label class="field">
+          <span>Tags (comma-separated)</span>
+          <input bind:value={edit.tags} placeholder="bug, frontend" />
+        </label>
+        <div class="modal-foot">
+          <button class="btn-ghost" onclick={() => (editing = false)}>Cancel</button>
+          <button class="btn-primary" disabled={!edit.title.trim()} onclick={saveEdit}>{@render iconCheck()}<span>Save</span></button>
+        </div>
+      {:else}
+        <h3 class="d-title">{detail.title}</h3>
+        <div class="d-chips">
+          <span class="d-status s-{detail.status}">{statusLabel(detail.status)}</span>
+          {#if detail.priority}<span class="pri pri-{detail.priority}">{detail.priority}</span>{/if}
+          {#each detail.tags ?? [] as tag}<span class="tag">{tag}</span>{/each}
+        </div>
+        {#if detail.description}
+          <p class="d-desc">{detail.description}</p>
+        {:else}
+          <p class="d-desc is-muted">No description</p>
+        {/if}
+        <dl class="d-meta">
+          {#if detail.project}<div><dt>Project</dt><dd>{detail.project}</dd></div>{/if}
+          {#if detail.due_date}<div><dt>Due</dt><dd>{detail.due_date}</dd></div>{/if}
+          {#if detail.handoff_to}<div><dt>Handoff</dt><dd>→ {detail.handoff_to}{detail.handoff_reason ? ": " + detail.handoff_reason : ""}</dd></div>{/if}
+          <div><dt>Created</dt><dd>{fmtDateTime(detail.created_at)}</dd></div>
+          <div><dt>Updated</dt><dd>{fmtDateTime(detail.updated_at)}</dd></div>
+        </dl>
+        <div class="d-move">
+          {#each COLUMNS.filter((x) => x.key !== detail.status) as m}
+            <button class="btn-ghost sm" onclick={() => moveFromDetail(m.key)}>Move to {m.label}</button>
+          {/each}
+        </div>
+        <div class="d-section">
+          <h4>Notes</h4>
+          {#if (detail.notes ?? []).length === 0}<div class="empty sm">No notes yet</div>{/if}
+          {#each detail.notes ?? [] as n (n.id)}
+            <div class="d-note"><p>{n.body}</p><span class="ev-time">{fmtDateTime(n.created_at)}</span></div>
+          {/each}
+          <div class="d-note-add">
+            <input bind:value={noteBody} placeholder="Add a note…" onkeydown={(e) => { if (e.key === "Enter") addNote(); }} />
+            <button class="btn-primary sm" disabled={!noteBody.trim()} onclick={addNote}>Add</button>
+          </div>
+        </div>
+      {/if}
     </div>
   </aside>
 {/if}
@@ -260,6 +454,7 @@
     --accent: #22c55e; --accent-fg: #052e13; --danger: #ef4444; --amber: #f59e0b;
     --todo: #64748b; --prog: #3b82f6; --done: #22c55e;
     --radius: 12px; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.25);
+    --topbar-h: calc(64px + env(safe-area-inset-top));
     --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   :global(:root[data-theme="light"]) {
@@ -271,6 +466,8 @@
   }
   :global(html), :global(body) { margin: 0; background: var(--bg); }
   :global(*) { box-sizing: border-box; }
+  /* Never let a focused input trigger iOS auto-zoom: 16px floor everywhere. */
+  :global(input), :global(textarea), :global(select) { font-size: 16px; }
   :global(#app) {
     font-family: var(--font); color: var(--text); background: var(--bg);
     min-height: 100dvh; -webkit-font-smoothing: antialiased;
@@ -278,7 +475,7 @@
   }
 
   .topbar {
-    position: sticky; top: 0; z-index: 20;
+    position: sticky; top: 0; z-index: 60;
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px; padding: 12px 16px; padding-top: calc(12px + env(safe-area-inset-top));
     background: color-mix(in srgb, var(--bg) 85%, transparent);
@@ -369,8 +566,14 @@
   }
   .card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); transform: translateY(-1px); }
   .card:active { cursor: grabbing; }
+  .card.menu-open { z-index: 40; } /* lift above sibling cards so the action menu isn't covered */
   .card-top { display: flex; align-items: flex-start; gap: 8px; }
-  .title { margin: 0; font-size: 14px; font-weight: 500; line-height: 1.45; flex: 1; word-break: break-word; }
+  .title {
+    margin: 0; padding: 0; flex: 1; text-align: left; border: none; background: transparent;
+    font-family: inherit; font-size: 14px; font-weight: 500; line-height: 1.45; color: var(--text);
+    word-break: break-word; cursor: pointer;
+  }
+  .title:hover { color: var(--accent); }
   .menu-btn {
     flex: 0 0 auto; width: 30px; height: 30px; margin: -4px -4px 0 0; border: none; border-radius: 8px;
     background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center;
@@ -392,7 +595,7 @@
     position: absolute; top: 40px; right: 10px; z-index: 30; min-width: 168px; padding: 6px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
     box-shadow: 0 8px 28px rgba(0,0,0,.35); display: flex; flex-direction: column; gap: 2px;
-    animation: pop .12s ease;
+    animation: popmenu .12s ease;
   }
   .menu button {
     text-align: left; padding: 9px 10px; min-height: 40px; border: none; border-radius: 7px;
@@ -400,7 +603,6 @@
   }
   .menu button:hover { background: var(--surface-2); }
   .menu button.danger { color: var(--danger); }
-  .backdrop-invisible { position: fixed; inset: 0; z-index: 25; background: transparent; border: none; cursor: default; }
 
   .empty { padding: 20px; text-align: center; font-size: 13px; color: var(--muted); border: 1px dashed var(--border); border-radius: var(--radius); }
 
@@ -418,7 +620,7 @@
   .field > span { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
   .field input {
     width: 100%; height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border);
-    background: var(--surface-2); color: var(--text); font-family: inherit; font-size: 15px;
+    background: var(--surface-2); color: var(--text); font-family: inherit; font-size: 16px;
     transition: border-color .12s ease, box-shadow .12s ease;
   }
   .field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
@@ -429,24 +631,71 @@
 
   /* Activity drawer */
   .activity {
-    position: fixed; z-index: 50; right: 0; top: 0; bottom: 0; width: min(360px, 100vw);
+    position: fixed; z-index: 50; right: 0; top: var(--topbar-h); bottom: 0; width: min(360px, 100vw);
     background: var(--surface); border-left: 1px solid var(--border);
     display: flex; flex-direction: column; animation: slide .2s ease;
-    padding-top: env(safe-area-inset-top);
   }
   .activity-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); }
   .live { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; }
   .live svg { width: 17px; height: 17px; color: var(--accent); }
-  .feed { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
-  .ev { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; padding: 8px 8px; border-radius: 8px; }
+  .feed { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 1px; }
+  .ev { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 9px 8px; border-radius: 8px; }
   .ev:hover { background: var(--surface-2); }
-  .ev-kind { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 2px 7px; border-radius: 6px; background: var(--surface-3); color: var(--muted); }
+  .ev-dot { width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--muted); }
+  .ev-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .ev-line { display: flex; align-items: center; gap: 7px; }
+  .ev-kind { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 2px 7px; border-radius: 6px; background: var(--surface-3); color: var(--muted); flex: 0 0 auto; }
+  .ev-task { flex: 1; min-width: 0; text-align: left; border: none; background: transparent; padding: 0; font-family: inherit; font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev-task:hover { color: var(--accent); }
   .k-created { color: var(--done); background: color-mix(in srgb, var(--done) 15%, transparent); }
   .k-moved { color: var(--prog); background: color-mix(in srgb, var(--prog) 15%, transparent); }
   .k-handoff { color: var(--amber); background: color-mix(in srgb, var(--amber) 15%, transparent); }
+  .k-note, .k-updated { color: var(--prog); background: color-mix(in srgb, var(--prog) 12%, transparent); }
   .k-deleted, .k-archived { color: var(--danger); background: color-mix(in srgb, var(--danger) 13%, transparent); }
-  .ev-detail { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ev-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ev-dot.k-created { background: var(--done); }
+  .ev-dot.k-moved, .ev-dot.k-note, .ev-dot.k-updated { background: var(--prog); }
+  .ev-dot.k-handoff { background: var(--amber); }
+  .ev-dot.k-deleted, .ev-dot.k-archived { background: var(--danger); }
+  .ev-detail { font-size: 12.5px; color: var(--muted); line-height: 1.4; word-break: break-word; }
+  .ev-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; flex: 0 0 auto; margin-left: auto; }
+
+  /* Task detail drawer */
+  .detail {
+    position: fixed; z-index: 50; right: 0; top: var(--topbar-h); bottom: 0; width: min(440px, 100vw);
+    background: var(--surface); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; animation: slide .2s ease;
+  }
+  .head-actions { display: flex; align-items: center; gap: 6px; }
+  .detail-body { flex: 1; overflow-y: auto; padding: 18px 18px calc(24px + env(safe-area-inset-bottom)); }
+  .d-title { margin: 0 0 12px; font-size: 18px; font-weight: 700; line-height: 1.3; letter-spacing: -.01em; word-break: break-word; }
+  .d-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .d-status { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
+  .s-todo { color: var(--todo); background: color-mix(in srgb, var(--todo) 18%, transparent); }
+  .s-in_progress { color: var(--prog); background: color-mix(in srgb, var(--prog) 15%, transparent); }
+  .s-done { color: var(--done); background: color-mix(in srgb, var(--done) 15%, transparent); }
+  .d-desc { font-size: 14px; line-height: 1.55; color: var(--text); white-space: pre-wrap; word-break: break-word; margin: 0 0 18px; }
+  .d-desc.is-muted { color: var(--muted); font-style: italic; }
+  .d-meta { display: flex; flex-direction: column; gap: 8px; margin: 0 0 18px; padding: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; }
+  .d-meta > div { display: flex; gap: 10px; font-size: 13px; }
+  .d-meta dt { flex: 0 0 74px; color: var(--muted); font-weight: 600; margin: 0; }
+  .d-meta dd { margin: 0; color: var(--text); word-break: break-word; }
+  .d-move { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+  .d-section h4 { margin: 0 0 10px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+  .d-note { padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); margin-bottom: 8px; }
+  .d-note p { margin: 0 0 4px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  .d-note-add { display: flex; gap: 8px; margin-top: 10px; }
+  .d-note-add input {
+    flex: 1; min-width: 0; height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text); font-family: inherit; font-size: 16px;
+  }
+  .d-note-add input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .detail-body textarea {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text); font-family: inherit; font-size: 16px; line-height: 1.5; resize: vertical;
+  }
+  .detail-body textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .btn-primary.sm, .btn-ghost.sm { height: 36px; padding: 0 12px; font-size: 13px; flex: 0 0 auto; }
+  .empty.sm { padding: 12px; font-size: 12px; }
 
   @keyframes pop { from { opacity: 0; transform: translate(-50%, -50%) scale(.96); } }
   @keyframes fade { from { opacity: 0; } }

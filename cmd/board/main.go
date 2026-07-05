@@ -226,8 +226,16 @@ func cmdEvent(args []string, stdout io.Writer) error {
 
 func runServe(args []string, stdout io.Writer) error {
 	addr := "127.0.0.1:7420"
-	if len(args) == 2 && args[0] == "--addr" {
-		addr = args[1]
+	for len(args) > 0 {
+		switch args[0] {
+		case "--addr":
+			if len(args) < 2 {
+				return fmt.Errorf("usage: board serve [--addr host:port]: --addr requires a value")
+			}
+			addr, args = args[1], args[2:]
+		default:
+			return fmt.Errorf("board serve: unknown argument %q", args[0])
+		}
 	}
 	st, err := openStore()
 	if err != nil {
@@ -267,5 +275,23 @@ func runSetup(args []string, stdout io.Writer) error {
 		}
 		fmt.Fprintf(stdout, "  configured %s -> %s\n", c.Name, c.Path)
 	}
+
+	// Install the "always keep the board updated" rules into Claude Code
+	// (SessionStart hook + CLAUDE.md block) so every session tracks the board
+	// automatically.
+	if yes || askYes(stdout, fmt.Sprintf("Install board auto-update rules into Claude Code (%s)?", filepath.Join(home, ".claude"))) {
+		if err := setup.InstallClaudeRules(home); err != nil {
+			fmt.Fprintf(stdout, "  FAILED board auto-update rules: %v\n", err)
+		} else {
+			fmt.Fprintf(stdout, "  installed board auto-update rules -> %s\n", filepath.Join(home, ".claude"))
+		}
+	}
 	return nil
+}
+
+func askYes(stdout io.Writer, prompt string) bool {
+	fmt.Fprintf(stdout, "%s [y/N] ", prompt)
+	var resp string
+	fmt.Scanln(&resp)
+	return strings.HasPrefix(strings.ToLower(resp), "y")
 }

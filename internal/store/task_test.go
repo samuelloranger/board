@@ -71,13 +71,15 @@ func TestListTasksFilters(t *testing.T) {
 	if len(all) != 4 {
 		t.Fatalf("want 4 got %d", len(all))
 	}
+	// Global (NULL-project) tasks are pinned into every project view, so
+	// project a returns t1, t2 AND g1.
 	byProj, _ := st.ListTasks(ListFilter{Project: &a})
-	if len(byProj) != 2 {
-		t.Fatalf("project filter: want 2 got %d", len(byProj))
+	if len(byProj) != 3 {
+		t.Fatalf("project filter: want 3 (incl. global) got %d", len(byProj))
 	}
 	todo := "todo"
 	byStatus, _ := st.ListTasks(ListFilter{Project: &a, Status: &todo})
-	if len(byStatus) != 1 || byStatus[0].Title != "t1" {
+	if len(byStatus) != 2 || byStatus[0].Title != "t1" {
 		t.Fatalf("status filter wrong: %+v", byStatus)
 	}
 	tag := "x"
