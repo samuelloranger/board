@@ -13,6 +13,11 @@ You have a kanban board via the `board` MCP server. Use it to persist work acros
 - Finishing → `move_task` to `done`.
 - Learning something worth remembering → `add_note` on the task.
 - Reviewing state → `get_board` (current project) or `list_tasks`.
+- **Starting a session** → call `resume` first to restore in-progress work and
+  pick up anything handed to you.
+- **Blocked / needs another agent or a human** → `handoff(id, to, reason)` with
+  `to` = the receiver (`human`, `codex`, …) and a clear reason. Don't just
+  leave the task idle.
 
 ## Rules
 - One task per meaningful unit of work. Don't create tasks for trivial one-liners.
