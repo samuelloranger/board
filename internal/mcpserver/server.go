@@ -175,5 +175,37 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 		return nil, b, nil
 	})
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "handoff",
+		Description: "Hand a task to another agent or a human, with context. 'to' is a free label (e.g. 'codex','cursor','human'). The receiver picks it up via move_task, which clears the handoff.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
+		ID     int64  `json:"id"`
+		To     string `json:"to"`
+		Reason string `json:"reason,omitempty"`
+	}) (*mcp.CallToolResult, any, error) {
+		tk, err := st.Handoff(a.ID, a.To, a.Reason)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, tk, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "resume",
+		Description: "Restore working context in one call: returns in_progress tasks (with notes) and any tasks handed off to you, for the current project (omit project) or a named one (pass '*' for all). Call this at the start of a session.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
+		Project string `json:"project,omitempty"`
+	}) (*mcp.CallToolResult, any, error) {
+		var proj *string
+		if a.Project != "*" {
+			proj = resolveProject(a.Project, def)
+		}
+		r, err := st.Resume(proj)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, r, nil
+	})
+
 	return s
 }

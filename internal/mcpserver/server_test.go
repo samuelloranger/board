@@ -67,3 +67,29 @@ func TestDefaultProjectApplied(t *testing.T) {
 		t.Fatalf("default project not applied: %+v", tasks[0].Project)
 	}
 }
+
+func TestHandoffAndResumeTools(t *testing.T) {
+	st := newStore(t)
+	def := "proj"
+	cs := connect(t, st, &def)
+	ctx := context.Background()
+
+	// Create + hand off.
+	cs.CallTool(ctx, &mcp.CallToolParams{Name: "create_task",
+		Arguments: map[string]any{"title": "needs human"}})
+	tasks, _ := st.ListTasks(store.ListFilter{})
+	id := tasks[0].ID
+	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "handoff",
+		Arguments: map[string]any{"id": id, "to": "human", "reason": "approve deploy"}}); err != nil {
+		t.Fatalf("handoff tool: %v", err)
+	}
+	got, _ := st.GetTask(id)
+	if got.HandoffTo == nil || *got.HandoffTo != "human" {
+		t.Fatalf("handoff not applied: %+v", got.HandoffTo)
+	}
+	// resume returns without error.
+	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "resume",
+		Arguments: map[string]any{}}); err != nil {
+		t.Fatalf("resume tool: %v", err)
+	}
+}
