@@ -11,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samuelloranger/board/internal/mcpserver"
+	"github.com/samuelloranger/board/internal/setup"
 	"github.com/samuelloranger/board/internal/store"
 )
 
@@ -203,10 +204,39 @@ func cmdNote(args []string, stdout io.Writer) error {
 	return nil
 }
 
-// Temporary stubs — replaced in Tasks 11 (setup) and 12 (serve).
+// Temporary stub — replaced in Task 12 (serve).
 func runServe(args []string, stdout io.Writer) error {
 	return fmt.Errorf("serve: not yet implemented")
 }
+
 func runSetup(args []string, stdout io.Writer) error {
-	return fmt.Errorf("setup: not yet implemented")
+	binPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	home, _ := os.UserHomeDir()
+	clients := []setup.Client{
+		{Name: "Claude Code", Kind: "json", Path: filepath.Join(home, ".claude.json")},
+		{Name: "Codex CLI", Kind: "toml", Path: filepath.Join(home, ".codex", "config.toml")},
+		{Name: "Cursor", Kind: "json", Path: filepath.Join(home, ".cursor", "mcp.json")},
+		{Name: "Antigravity", Kind: "json", Path: filepath.Join(home, ".antigravity", "mcp_config.json")},
+	}
+	yes := len(args) == 1 && args[0] == "--yes"
+	for _, c := range clients {
+		if !yes {
+			fmt.Fprintf(stdout, "Register board in %s (%s)? [y/N] ", c.Name, c.Path)
+			var resp string
+			fmt.Scanln(&resp)
+			if !strings.HasPrefix(strings.ToLower(resp), "y") {
+				fmt.Fprintf(stdout, "  skipped %s\n", c.Name)
+				continue
+			}
+		}
+		if err := setup.Register(binPath, c); err != nil {
+			fmt.Fprintf(stdout, "  FAILED %s: %v\n", c.Name, err)
+			continue
+		}
+		fmt.Fprintf(stdout, "  configured %s -> %s\n", c.Name, c.Path)
+	}
+	return nil
 }
