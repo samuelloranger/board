@@ -248,7 +248,7 @@ func runSetup(args []string, stdout io.Writer) error {
 		{Name: "Claude Code", Kind: "json", Path: filepath.Join(home, ".claude.json")},
 		{Name: "Codex CLI", Kind: "toml", Path: filepath.Join(home, ".codex", "config.toml")},
 		{Name: "Cursor", Kind: "json", Path: filepath.Join(home, ".cursor", "mcp.json")},
-		{Name: "Antigravity", Kind: "json", Path: filepath.Join(home, ".antigravity", "mcp_config.json")},
+		{Name: "Antigravity", Kind: "json", Path: filepath.Join(home, ".gemini", "antigravity", "mcp_config.json")},
 	}
 	yes := len(args) == 1 && args[0] == "--yes"
 	for _, c := range clients {

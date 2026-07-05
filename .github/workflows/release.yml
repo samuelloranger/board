@@ -1,0 +1,44 @@
+name: release
+
+# Builds static cross-platform binaries and attaches them to the GitHub Release
+# on every pushed tag matching v*. Asset names match install.sh:
+#   board_${os}_${arch}  (os: linux|darwin, arch: amd64|arm64)
+#
+# NOTE: if GitHub Actions is disabled/billing-blocked on the account, cut
+# releases locally instead:
+#   for t in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
+#     set -- $t; CGO_ENABLED=0 GOOS=$1 GOARCH=$2 go build -ldflags "-s -w" \
+#       -o dist_release/board_$1_$2 ./cmd/board; done
+#   gh release create vX.Y.Z dist_release/* --title vX.Y.Z --generate-notes
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Build web UI
+        working-directory: internal/web/ui
+        run: bun install && bun run build
+      - name: Cross-compile binaries
+        run: |
+          mkdir -p dist_release
+          for pair in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
+            set -- $pair
+            CGO_ENABLED=0 GOOS=$1 GOARCH=$2 go build -ldflags "-s -w" \
+              -o "dist_release/board_$1_$2" ./cmd/board
+          done
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist_release/* --title "${GITHUB_REF_NAME}" --generate-notes

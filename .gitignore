@@ -1,4 +1,5 @@
 /board
+/dist_release/
 *.db
 *.db-wal
 *.db-shm
