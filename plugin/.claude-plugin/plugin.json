@@ -1,0 +1,8 @@
+{
+  "name": "board",
+  "version": "0.1.0",
+  "description": "Cross-client kanban board for AI agents (MCP).",
+  "mcpServers": {
+    "board": { "command": "board", "args": ["mcp"] }
+  }
+}
