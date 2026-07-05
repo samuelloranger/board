@@ -131,3 +131,63 @@ func (s *Store) taskNotes(id int64) ([]Note, error) {
 	}
 	return notes, rows.Err()
 }
+
+type ListFilter struct {
+	Project         *string
+	Status          *string
+	Priority        *string
+	Tag             *string
+	IncludeArchived bool
+}
+
+func (s *Store) ListTasks(f ListFilter) ([]*Task, error) {
+	q := `SELECT id FROM tasks WHERE 1=1`
+	var args []any
+	if f.Project != nil {
+		q += ` AND project = ?`
+		args = append(args, *f.Project)
+	}
+	if f.Status != nil {
+		q += ` AND status = ?`
+		args = append(args, *f.Status)
+	}
+	if f.Priority != nil {
+		q += ` AND priority = ?`
+		args = append(args, *f.Priority)
+	}
+	if f.Tag != nil {
+		q += ` AND id IN (SELECT task_id FROM tags WHERE tag = ?)`
+		args = append(args, *f.Tag)
+	}
+	if !f.IncludeArchived {
+		q += ` AND archived = 0`
+	}
+	q += ` ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, created_at ASC, id ASC`
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := []*Task{}
+	for _, id := range ids {
+		tk, err := s.GetTask(id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tk)
+	}
+	return out, nil
+}
