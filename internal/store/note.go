@@ -18,5 +18,6 @@ func (s *Store) AddNote(taskID int64, body string) (*Note, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.emit(&taskID, "note", body)
 	return &Note{ID: id, TaskID: taskID, Body: body, CreatedAt: ts}, nil
 }

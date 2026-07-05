@@ -57,6 +57,7 @@ func (s *Store) CreateTask(p CreateTaskParams) (*Task, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.emit(&id, "created", p.Title)
 	return s.GetTask(id)
 }
 
@@ -254,6 +255,7 @@ func (s *Store) UpdateTask(id int64, p UpdateTaskParams) (*Task, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.emit(&id, "updated", "")
 	return s.GetTask(id)
 }
 
@@ -279,6 +281,7 @@ func (s *Store) MoveTask(id int64, status string) (*Task, error) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, ErrNotFound
 	}
+	s.emit(&id, "moved", "→ "+status)
 	return s.GetTask(id)
 }
 
@@ -290,6 +293,11 @@ func (s *Store) SetArchived(id int64, archived bool) (*Task, error) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, ErrNotFound
 	}
+	kind := "archived"
+	if !archived {
+		kind = "unarchived"
+	}
+	s.emit(&id, kind, "")
 	return s.GetTask(id)
 }
 
@@ -301,6 +309,7 @@ func (s *Store) DeleteTask(id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	s.emit(&id, "deleted", "")
 	return nil
 }
 
