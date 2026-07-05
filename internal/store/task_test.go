@@ -100,3 +100,35 @@ func TestListExcludesArchived(t *testing.T) {
 		t.Fatalf("include archived failed, got %d", len(got))
 	}
 }
+
+func TestUpdateTask(t *testing.T) {
+	st := newTestStore(t)
+	tk, _ := st.CreateTask(CreateTaskParams{Title: "orig", Tags: []string{"a"}})
+	newTitle := "updated"
+	pr := "low"
+	newTags := []string{"b", "c"}
+	got, err := st.UpdateTask(tk.ID, UpdateTaskParams{Title: &newTitle, Priority: &pr, Tags: &newTags})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if got.Title != "updated" || got.Priority == nil || *got.Priority != "low" {
+		t.Fatalf("patch failed: %+v", got)
+	}
+	if len(got.Tags) != 2 || got.Tags[0] != "b" || got.Tags[1] != "c" {
+		t.Fatalf("tags not replaced: %v", got.Tags)
+	}
+	// Clearing priority with empty-string sentinel.
+	empty := ""
+	got2, _ := st.UpdateTask(tk.ID, UpdateTaskParams{Priority: &empty})
+	if got2.Priority != nil {
+		t.Fatalf("priority should be cleared, got %v", got2.Priority)
+	}
+}
+
+func TestUpdateTaskNotFound(t *testing.T) {
+	st := newTestStore(t)
+	title := "x"
+	if _, err := st.UpdateTask(42, UpdateTaskParams{Title: &title}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound got %v", err)
+	}
+}

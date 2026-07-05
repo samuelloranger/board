@@ -191,3 +191,79 @@ func (s *Store) ListTasks(f ListFilter) ([]*Task, error) {
 	}
 	return out, nil
 }
+
+type UpdateTaskParams struct {
+	Title       *string
+	Description *string
+	Priority    *string // "" clears to NULL
+	DueDate     *string // "" clears to NULL
+	Tags        *[]string
+}
+
+func (s *Store) UpdateTask(id int64, p UpdateTaskParams) (*Task, error) {
+	if _, err := s.GetTask(id); err != nil {
+		return nil, err
+	}
+	if p.Priority != nil && *p.Priority != "" && !validPriority(*p.Priority) {
+		return nil, fmt.Errorf("invalid priority %q", *p.Priority)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	set := []string{"updated_at = ?"}
+	args := []any{now()}
+	if p.Title != nil {
+		set = append(set, "title = ?")
+		args = append(args, *p.Title)
+	}
+	if p.Description != nil {
+		set = append(set, "description = ?")
+		args = append(args, *p.Description)
+	}
+	if p.Priority != nil {
+		if *p.Priority == "" {
+			set = append(set, "priority = NULL")
+		} else {
+			set = append(set, "priority = ?")
+			args = append(args, *p.Priority)
+		}
+	}
+	if p.DueDate != nil {
+		if *p.DueDate == "" {
+			set = append(set, "due_date = NULL")
+		} else {
+			set = append(set, "due_date = ?")
+			args = append(args, *p.DueDate)
+		}
+	}
+	args = append(args, id)
+	if _, err := tx.Exec("UPDATE tasks SET "+joinComma(set)+" WHERE id = ?", args...); err != nil {
+		return nil, err
+	}
+	if p.Tags != nil {
+		if _, err := tx.Exec(`DELETE FROM tags WHERE task_id = ?`, id); err != nil {
+			return nil, err
+		}
+		if err := insertTags(tx, id, *p.Tags); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetTask(id)
+}
+
+func joinComma(parts []string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += ", "
+		}
+		out += p
+	}
+	return out
+}
