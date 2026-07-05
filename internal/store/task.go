@@ -267,3 +267,46 @@ func joinComma(parts []string) string {
 	}
 	return out
 }
+
+func (s *Store) MoveTask(id int64, status string) (*Task, error) {
+	if !validStatus(status) {
+		return nil, fmt.Errorf("invalid status %q", status)
+	}
+	res, err := s.db.Exec(`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`, status, now(), id)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrNotFound
+	}
+	return s.GetTask(id)
+}
+
+func (s *Store) SetArchived(id int64, archived bool) (*Task, error) {
+	res, err := s.db.Exec(`UPDATE tasks SET archived = ?, updated_at = ? WHERE id = ?`, boolToInt(archived), now(), id)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrNotFound
+	}
+	return s.GetTask(id)
+}
+
+func (s *Store) DeleteTask(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM tasks WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

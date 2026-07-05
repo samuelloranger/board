@@ -132,3 +132,31 @@ func TestUpdateTaskNotFound(t *testing.T) {
 		t.Fatalf("want ErrNotFound got %v", err)
 	}
 }
+
+func TestMoveArchiveDelete(t *testing.T) {
+	st := newTestStore(t)
+	tk, _ := st.CreateTask(CreateTaskParams{Title: "x"})
+
+	moved, err := st.MoveTask(tk.ID, "in_progress")
+	if err != nil || moved.Status != "in_progress" {
+		t.Fatalf("MoveTask: %v %+v", err, moved)
+	}
+	if _, err := st.MoveTask(tk.ID, "bogus"); err == nil {
+		t.Fatal("expected invalid status error")
+	}
+
+	arch, err := st.SetArchived(tk.ID, true)
+	if err != nil || !arch.Archived {
+		t.Fatalf("SetArchived: %v %+v", err, arch)
+	}
+
+	if err := st.DeleteTask(tk.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	if _, err := st.GetTask(tk.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("task should be gone, got %v", err)
+	}
+	if err := st.DeleteTask(tk.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second delete want ErrNotFound got %v", err)
+	}
+}
