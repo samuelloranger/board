@@ -67,6 +67,8 @@ func run(args []string, stdout io.Writer) error {
 		return cmdArchive(rest, stdout)
 	case "note":
 		return cmdNote(rest, stdout)
+	case "event":
+		return cmdEvent(rest, stdout)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -204,6 +206,22 @@ func cmdNote(args []string, stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "note added to #%d\n", id)
 	return nil
+}
+
+func cmdEvent(args []string, stdout io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: board event <kind> [detail...]")
+	}
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	detail := ""
+	if len(args) > 1 {
+		detail = strings.Join(args[1:], " ")
+	}
+	return st.LogEvent(args[0], detail)
 }
 
 func runServe(args []string, stdout io.Writer) error {

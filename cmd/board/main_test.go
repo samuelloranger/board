@@ -34,3 +34,10 @@ func TestCLIUnknownCommand(t *testing.T) {
 		t.Fatal("expected error for unknown command")
 	}
 }
+
+func TestCLIEvent(t *testing.T) {
+	withDB(t)
+	if err := run([]string{"event", "tool", "Edit"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("event: %v", err)
+	}
+}
