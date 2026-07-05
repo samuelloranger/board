@@ -3,10 +3,12 @@ package web
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samuelloranger/board/internal/store"
 )
@@ -67,6 +69,56 @@ func Handler(st *store.Store) http.Handler {
 			writeJSON(w, tk, err)
 		default:
 			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/api/resume", func(w http.ResponseWriter, r *http.Request) {
+		var proj *string
+		if p := r.URL.Query().Get("project"); p != "" && p != "*" {
+			proj = &p
+		}
+		res, err := st.Resume(proj)
+		writeJSON(w, res, err)
+	})
+
+	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		since := int64(0)
+		if s := r.URL.Query().Get("since"); s != "" {
+			if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+				since = v
+			}
+		}
+		send := func() {
+			evs, err := st.Events(since, 200)
+			if err != nil {
+				return
+			}
+			for _, e := range evs {
+				b, _ := json.Marshal(e)
+				fmt.Fprintf(w, "data: %s\n\n", b)
+				since = e.ID
+			}
+			flusher.Flush()
+		}
+		send() // flush existing immediately
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				send()
+			}
 		}
 	})
 
