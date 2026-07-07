@@ -1,4 +1,13 @@
-# board
+<h1 align="center">board</h1>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/samuelloranger/board" alt="License: MIT" /></a>
+  <a href="https://github.com/samuelloranger/board/releases"><img src="https://img.shields.io/github/v/release/samuelloranger/board" alt="Latest release" /></a>
+  <a href="https://github.com/samuelloranger/board/actions/workflows/release.yml"><img src="https://github.com/samuelloranger/board/actions/workflows/release.yml/badge.svg" alt="Release builds" /></a>
+  <img src="https://img.shields.io/badge/Go-single%20binary-00ADD8?logo=go&logoColor=white" alt="Go single binary" />
+</p>
+
+![Web UI screenshot](docs/screenshot.png)
 
 A cross-client kanban board for AI agents. One central board, shared by every
 MCP-capable AI client on your machine — Claude Code, Codex CLI, Cursor, and
