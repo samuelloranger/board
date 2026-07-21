@@ -5,6 +5,7 @@
   <a href="https://github.com/samuelloranger/board/releases"><img src="https://img.shields.io/github/v/release/samuelloranger/board" alt="Latest release" /></a>
   <a href="https://github.com/samuelloranger/board/actions/workflows/release.yml"><img src="https://github.com/samuelloranger/board/actions/workflows/release.yml/badge.svg" alt="Release builds" /></a>
   <img src="https://img.shields.io/badge/Go-single%20binary-00ADD8?logo=go&logoColor=white" alt="Go single binary" />
+  <a href="https://buymeacoffee.com/samlo122"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy me a coffee" /></a>
 </p>
 
 ![Web UI screenshot](docs/screenshot.png)
