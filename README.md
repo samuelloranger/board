@@ -64,6 +64,13 @@ board serve                   # open the web UI at http://127.0.0.1:7420
 `archive_task`, `unarchive_task`, `delete_task`, `add_note`, `get_board`,
 `handoff`, `resume`.
 
+Responses are sized for agents, whose context is the scarce resource. Write
+tools confirm with ids only; `get_board` and `list_tasks` return compact tasks
+(id, title, status, priority, due_date, handoff_to) and cap their output — the
+newest 10 done tasks, 50 listed tasks — reporting the true total when they
+truncate. Pass `verbose: true` for full tasks with descriptions and notes,
+`limit` to change the list cap, or `get_task` for one task in full.
+
 ## Claude Code plugin
 
 The `plugin/` directory is a Claude Code plugin that bundles the MCP server

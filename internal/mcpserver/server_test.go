@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -66,6 +67,116 @@ func TestDefaultProjectApplied(t *testing.T) {
 	if tasks[0].Project == nil || *tasks[0].Project != "autoproj" {
 		t.Fatalf("default project not applied: %+v", tasks[0].Project)
 	}
+}
+
+// structOut decodes a tool call's structured result into a generic map.
+func structOut(t *testing.T, res *mcp.CallToolResult) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal %s: %v", b, err)
+	}
+	return m
+}
+
+func TestMoveTaskReportsTransitionOnly(t *testing.T) {
+	st := newStore(t)
+	cs := connect(t, st, nil)
+	ctx := context.Background()
+
+	tk, err := st.CreateTask(store.CreateTaskParams{Title: "t", Description: "a long description that must not be echoed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "move_task",
+		Arguments: map[string]any{"id": tk.ID, "status": "in_progress"}})
+	if err != nil {
+		t.Fatalf("move_task: %v", err)
+	}
+	m := structOut(t, res)
+	if m["from"] != "todo" || m["to"] != "in_progress" {
+		t.Fatalf("want todo->in_progress, got %+v", m)
+	}
+	if _, ok := m["description"]; ok {
+		t.Fatalf("move_task leaked description: %+v", m)
+	}
+	if got, _ := st.GetTask(tk.ID); got.Status != "in_progress" {
+		t.Fatalf("status not persisted: %q", got.Status)
+	}
+}
+
+func TestAddNoteReturnsIdsOnly(t *testing.T) {
+	st := newStore(t)
+	cs := connect(t, st, nil)
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t"})
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "add_note",
+		Arguments: map[string]any{"id": tk.ID, "body": "verbose finding text"}})
+	if err != nil {
+		t.Fatalf("add_note: %v", err)
+	}
+	m := structOut(t, res)
+	if _, ok := m["note_id"]; !ok {
+		t.Fatalf("missing note_id: %+v", m)
+	}
+	if _, ok := m["body"]; ok {
+		t.Fatalf("add_note echoed the body back: %+v", m)
+	}
+	got, _ := st.GetTask(tk.ID)
+	if len(got.Notes) != 1 || got.Notes[0].Body != "verbose finding text" {
+		t.Fatalf("note not persisted: %+v", got.Notes)
+	}
+}
+
+func TestGetBoardSlimByDefaultAndVerbose(t *testing.T) {
+	st := newStore(t)
+	cs := connect(t, st, nil)
+	ctx := context.Background()
+	st.CreateTask(store.CreateTaskParams{Title: "t", Description: "heavy description"})
+
+	m := structOut(t, mustCall(t, cs, ctx, "get_board", map[string]any{}))
+	todo := m["todo"].([]any)
+	if len(todo) != 1 {
+		t.Fatalf("want 1 todo, got %+v", todo)
+	}
+	if _, ok := todo[0].(map[string]any)["description"]; ok {
+		t.Fatalf("slim board leaked description: %+v", todo[0])
+	}
+
+	v := structOut(t, mustCall(t, cs, ctx, "get_board", map[string]any{"verbose": true}))
+	vt := v["todo"].([]any)
+	if vt[0].(map[string]any)["description"] != "heavy description" {
+		t.Fatalf("verbose board dropped description: %+v", vt[0])
+	}
+}
+
+func TestGetBoardCapsDoneColumn(t *testing.T) {
+	st := newStore(t)
+	cs := connect(t, st, nil)
+	for i := 0; i < doneLimit+5; i++ {
+		st.CreateTask(store.CreateTaskParams{Title: "d", Status: "done"})
+	}
+	m := structOut(t, mustCall(t, cs, context.Background(), "get_board", map[string]any{}))
+	done := m["done"].([]any)
+	if len(done) != doneLimit {
+		t.Fatalf("want %d done, got %d", doneLimit, len(done))
+	}
+	if m["done_total"].(float64) != float64(doneLimit+5) {
+		t.Fatalf("done_total wrong: %+v", m["done_total"])
+	}
+}
+
+func mustCall(t *testing.T, cs *mcp.ClientSession, ctx context.Context, name string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return res
 }
 
 func TestHandoffAndResumeTools(t *testing.T) {
