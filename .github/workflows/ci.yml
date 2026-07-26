@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Verify Go formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet Go
+        run: go vet ./...
+      - name: Test Go
+        run: go test ./...
+      - name: Build Go
+        run: go build ./...
+
+      - name: Install web dependencies
+        working-directory: internal/web/ui
+        run: bun install --frozen-lockfile
+      - name: Build web UI
+        working-directory: internal/web/ui
+        run: bun run build
