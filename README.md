@@ -26,7 +26,9 @@ curl -fsSL https://raw.githubusercontent.com/samuelloranger/board/main/install.s
 
 The installer downloads the binary to `~/.board/bin` and offers to register the
 `board` MCP server with each AI client it detects (Claude Code, Codex CLI,
-Cursor, Antigravity). Pass `--yes` to skip the prompts:
+Cursor, Antigravity). For Cursor it can also install a usage skill, an always-on
+rule, and an Agent CLI allowlist entry (`Mcp(board:*)`). Pass `--yes` to skip
+the prompts:
 
 ```sh
 curl -fsSL .../install.sh | sh -s -- --yes

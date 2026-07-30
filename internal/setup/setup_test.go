@@ -107,3 +107,76 @@ func TestWriteTOMLServer(t *testing.T) {
 		t.Fatal("clobbered existing toml content")
 	}
 }
+
+func TestInstallCursorIntegration(t *testing.T) {
+	home := t.TempDir()
+	if err := InstallCursorIntegration(home); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallCursorIntegration(home); err != nil { // idempotent
+		t.Fatal(err)
+	}
+
+	skill := filepath.Join(home, ".cursor", "skills", "board", "SKILL.md")
+	raw, err := os.ReadFile(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, "name: board") || !strings.Contains(s, "resume") {
+		t.Fatalf("skill missing expected content:\n%s", s)
+	}
+
+	rule := filepath.Join(home, ".cursor", "rules", "board.mdc")
+	raw, err = os.ReadFile(rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = string(raw)
+	if !strings.Contains(s, "alwaysApply: true") || !strings.Contains(s, "Board / Kanban") {
+		t.Fatalf("rule missing expected content:\n%s", s)
+	}
+
+	cli := filepath.Join(home, ".cursor", "cli-config.json")
+	raw, err = os.ReadFile(cli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("cli-config not valid JSON: %v", err)
+	}
+	allow := m["permissions"].(map[string]any)["allow"].([]any)
+	if !hasString(allow, cursorBoardAllow) {
+		t.Fatalf("missing %s in allow: %v", cursorBoardAllow, allow)
+	}
+}
+
+func TestInstallCursorCLIAllowlistPreservesAndIsIdempotent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "cli-config.json")
+	os.WriteFile(p, []byte(`{"version":1,"editor":{"vimMode":true},"permissions":{"allow":["Shell(ls)"],"deny":[]}}`), 0o644)
+
+	if err := InstallCursorCLIAllowlist(p); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(p)
+	if err := InstallCursorCLIAllowlist(p); err != nil { // second run must not rewrite
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(p)
+	if string(before) != string(after) {
+		t.Fatal("idempotent re-run rewrote cli-config")
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(before, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["editor"].(map[string]any)["vimMode"] != true {
+		t.Fatal("clobbered unrelated cli-config field")
+	}
+	allow := m["permissions"].(map[string]any)["allow"].([]any)
+	if len(allow) != 2 || !hasString(allow, "Shell(ls)") || !hasString(allow, cursorBoardAllow) {
+		t.Fatalf("unexpected allow list: %v", allow)
+	}
+}

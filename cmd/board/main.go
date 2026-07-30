@@ -286,6 +286,16 @@ func runSetup(args []string, stdout io.Writer) error {
 			fmt.Fprintf(stdout, "  installed board auto-update rules -> %s\n", filepath.Join(home, ".claude"))
 		}
 	}
+
+	// Cursor editor + Agent CLI: skill, always-on rule, and Mcp(board:*) allowlist.
+	cursorDir := filepath.Join(home, ".cursor")
+	if yes || askYes(stdout, fmt.Sprintf("Install board skill, rules, and Agent CLI allowlist into Cursor (%s)?", cursorDir)) {
+		if err := setup.InstallCursorIntegration(home); err != nil {
+			fmt.Fprintf(stdout, "  FAILED Cursor board integration: %v\n", err)
+		} else {
+			fmt.Fprintf(stdout, "  installed Cursor skill/rules/CLI allowlist -> %s\n", cursorDir)
+		}
+	}
 	return nil
 }
 
