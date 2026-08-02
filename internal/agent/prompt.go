@@ -16,7 +16,8 @@ func BuildPrompt(tk *store.Task) string {
 	b.WriteString("LIVE PROGRESS (required):\n")
 	b.WriteString("- Call add_note on this task at the start, after each meaningful step, and whenever you edit or create files (include the paths).\n")
 	b.WriteString("- Keep notes short (1–3 sentences). The human watches them live on the board card.\n")
-	b.WriteString("- Do not go silent for long stretches of tool use without a note.\n\n")
+	b.WriteString("- Do not go silent for long stretches of tool use without a note.\n")
+	b.WriteString("- If blocked on CI or an external job, call set_run_wait with wait='ci', then clear it (wait='') when you resume.\n\n")
 	fmt.Fprintf(&b, "Task #%d [%s]: %s\n", tk.ID, tk.Status, tk.Title)
 	if tk.Description != "" {
 		fmt.Fprintf(&b, "\nDescription:\n%s\n", tk.Description)

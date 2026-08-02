@@ -249,3 +249,40 @@ func TestAskUserTool(t *testing.T) {
 		t.Fatalf("got %#v", m)
 	}
 }
+
+func TestSetRunWaitTool(t *testing.T) {
+	st := newStore(t)
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t"})
+	cs := connect(t, st, nil)
+	ctx := context.Background()
+	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "set_run_wait",
+		Arguments: map[string]any{"task_id": tk.ID, "wait": "ci"},
+	}); err == nil {
+		t.Fatal("expected error with no active run")
+	}
+	if _, err := st.CreateRun(tk.ID, "cursor", 1); err != nil {
+		t.Fatal(err)
+	}
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "set_run_wait",
+		Arguments: map[string]any{"task_id": tk.ID, "wait": "ci"},
+	})
+	if err != nil {
+		t.Fatalf("set_run_wait: %v", err)
+	}
+	m := structOut(t, res)
+	if m["wait"] != "ci" {
+		t.Fatalf("got %#v", m)
+	}
+	run, _ := st.ActiveRunForTask(tk.ID)
+	if run.Wait != "ci" {
+		t.Fatalf("store wait=%q", run.Wait)
+	}
+	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "set_run_wait",
+		Arguments: map[string]any{"task_id": tk.ID, "wait": ""},
+	}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+}

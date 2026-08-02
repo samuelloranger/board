@@ -322,6 +322,21 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 		return nil, out, nil
 	})
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "set_run_wait",
+		Description: "Mark the active agent run as waiting on CI (wait='ci') or clear waiting (wait=''). " +
+			"Use when blocked on GitHub Actions or similar; clear when you resume work.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
+		TaskID int64  `json:"task_id"`
+		Wait   string `json:"wait"`
+	}) (*mcp.CallToolResult, any, error) {
+		run, err := st.SetRunWait(a.TaskID, a.Wait)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"id": run.ID, "task_id": run.TaskID, "wait": run.Wait}, nil
+	})
+
 	return s
 }
 
