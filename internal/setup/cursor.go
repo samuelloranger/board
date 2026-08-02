@@ -31,6 +31,7 @@ const cursorSkillMarkdown = "---\n" +
 	"- Reviewing state → `get_board` (current project) or `list_tasks`.\n" +
 	"- **Starting a session** → call `resume` first to restore in-progress work and pick up anything handed to you.\n" +
 	"- **Blocked / needs another agent or a human** → `handoff(id, to, reason)` with `to` = the receiver (`human`, `codex`, `claude`, …) and a clear reason.\n" +
+	"- **Need a quick human answer mid-run (esp. if launched from the board UI)** → `ask_user(task_id, question)` and wait for the web UI reply.\n" +
 	"\n" +
 	"## Rules\n" +
 	"- One task per meaningful unit of work. Don't create tasks for trivial one-liners.\n" +

@@ -18,6 +18,8 @@ You have a kanban board via the `board` MCP server. Use it to persist work acros
 - **Blocked / needs another agent or a human** → `handoff(id, to, reason)` with
   `to` = the receiver (`human`, `codex`, …) and a clear reason. Don't just
   leave the task idle.
+- **Need a quick human answer mid-run (especially if launched from the board UI)** →
+  `ask_user(task_id, question)` and wait for the reply in the web UI.
 
 ## Rules
 - One task per meaningful unit of work. Don't create tasks for trivial one-liners.
