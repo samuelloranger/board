@@ -1087,7 +1087,7 @@
   /* Desktop */
   @media (min-width: 768px) {
     .segmented { display: none; }
-    .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; max-width: 1200px; margin: 0 auto; padding: 8px 24px 32px; }
+    .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 8px 24px 32px; }
     .col { display: flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 14px; padding: 12px; }
     .col.drop { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
     .col-head { padding: 4px 4px 12px; }
