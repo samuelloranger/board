@@ -26,6 +26,23 @@ func newStore(t *testing.T) *store.Store {
 	return st
 }
 
+func TestGetTaskAPI(t *testing.T) {
+	st := newStore(t)
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "full", Description: "desc"})
+	st.AddNote(tk.ID, "n1")
+	srv := httptest.NewServer(Handler(st))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/tasks/" + strconv.FormatInt(tk.ID, 10))
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("%v %d", err, resp.StatusCode)
+	}
+	var got store.Task
+	json.NewDecoder(resp.Body).Decode(&got)
+	if got.Title != "full" || got.Description != "desc" || len(got.Notes) != 1 {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestAPICreateAndBoard(t *testing.T) {
 	st := newStore(t)
 	srv := httptest.NewServer(Handler(st))

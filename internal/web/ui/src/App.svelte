@@ -115,7 +115,7 @@
         return;
       }
       await load();
-      if (detail?.id === id) detail = findTask(id);
+      if (detail?.id === id) await refreshDetail();
     } finally {
       const next = { ...startingIds };
       delete next[id];
@@ -139,7 +139,7 @@
   async function cancelRun(id) {
     await fetch(`/api/tasks/${id}/run/cancel`, { method: "POST" });
     await load();
-    if (detail) detail = findTask(detail.id);
+    if (detail?.id === id) await refreshDetail();
   }
   async function submitAnswer(qid) {
     const answer = answerDraft.trim();
@@ -198,7 +198,26 @@
     return null;
   }
   function statusLabel(s) { return (COLUMNS.find((c) => c.key === s) || {}).label ?? s; }
-  function openDetail(t) { detail = t; editing = false; noteBody = ""; runError = ""; needPath = null; }
+  async function fetchTask(id) {
+    const resp = await fetch(`/api/tasks/${id}`);
+    if (!resp.ok) return null;
+    return await resp.json();
+  }
+  async function openDetail(t) {
+    editing = false; noteBody = ""; runError = ""; needPath = null;
+    detail = t; // show immediately from board card
+    const full = await fetchTask(t.id);
+    if (full && detail?.id === t.id) detail = full;
+  }
+  async function refreshDetail() {
+    if (!detail) return;
+    const full = await fetchTask(detail.id);
+    if (full) detail = full;
+    else {
+      const t = findTask(detail.id);
+      if (t) detail = t;
+    }
+  }
   function closeDetail() { detail = null; editing = false; needPath = null; runError = ""; }
   function startEdit() {
     edit = {
@@ -222,7 +241,7 @@
       }),
     });
     await load();
-    detail = findTask(detail.id);
+    if (detail) await refreshDetail();
     editing = false;
   }
   async function addNote() {
@@ -234,11 +253,11 @@
     });
     noteBody = "";
     await load();
-    detail = findTask(detail.id);
+    if (detail) await refreshDetail();
   }
   async function moveFromDetail(status) {
     await move(detail.id, status);
-    detail = findTask(detail.id);
+    if (detail) await refreshDetail();
   }
 
   function onDragStart(e, id) { e.dataTransfer.setData("id", String(id)); e.dataTransfer.effectAllowed = "move"; }
@@ -294,7 +313,10 @@
     let loadTimer = null;
     const scheduleLoad = () => {
       clearTimeout(loadTimer);
-      loadTimer = setTimeout(load, 120);
+      loadTimer = setTimeout(async () => {
+        await load();
+        if (detail) await refreshDetail();
+      }, 120);
     };
 
     const es = new EventSource("/api/events?since=0");
@@ -553,9 +575,9 @@
 <!-- Task detail drawer -->
 {#if detail}
   <div class="scrim" onclick={closeDetail}></div>
-  <aside class="detail" role="dialog" aria-modal="true" aria-label="Task detail">
+  <aside class="detail" class:is-working={isWorking(detail.id)} role="dialog" aria-modal="true" aria-label="Task detail">
     <div class="activity-head">
-      <div class="live">{@render iconMore()}<span>{editing ? "Edit task" : "Task"}</span></div>
+      <div class="live"><span class="d-id">#{detail.id}</span><span>{editing ? "Edit" : "Task"}</span></div>
       <div class="head-actions">
         {#if !editing}
           <button class="icon-btn sm" aria-label="Edit task" onclick={startEdit}>{@render iconEdit()}</button>
@@ -563,6 +585,56 @@
         <button class="icon-btn sm" aria-label="Close" onclick={closeDetail}>{@render iconClose()}</button>
       </div>
     </div>
+    {#if !editing}
+      <div class="d-sticky">
+        <h3 class="d-title">{detail.title}</h3>
+        <div class="d-chips">
+          <span class="d-status s-{detail.status}">{statusLabel(detail.status)}</span>
+          {#if detail.priority}<span class="pri pri-{detail.priority}">{detail.priority}</span>{/if}
+          {#each detail.tags ?? [] as tag}<span class="tag">{tag}</span>{/each}
+        </div>
+        <div class="d-facts">
+          {#if detail.project}<span><em>Project</em> {detail.project}</span>{/if}
+          {#if detail.due_date}<span><em>Due</em> {detail.due_date}</span>{/if}
+          {#if detail.handoff_to}<span><em>Handoff</em> → {detail.handoff_to}</span>{/if}
+          <span><em>Updated</em> {fmtDateTime(detail.updated_at)}</span>
+        </div>
+        <div class="d-move">
+          {#each COLUMNS.filter((x) => x.key !== detail.status) as m}
+            <button class="btn-ghost sm" onclick={() => moveFromDetail(m.key)}>Move to {m.label}</button>
+          {/each}
+          {#if isWorking(detail.id)}
+            <button class="btn-run cancel sm" onclick={() => cancelRun(detail.id)}>Cancel agent</button>
+          {:else}
+            <button class="btn-run sm" onclick={() => runTask(detail.id)}>{@render iconPlay()}<span>Run</span></button>
+          {/if}
+        </div>
+        {#if latestRun(detail.id) || isStarting(detail.id)}
+          <div class="agent-status detail s-{isStarting(detail.id) ? 'starting' : latestRun(detail.id).status}">
+            <div class="agent-row">
+              <span class="agent-label">{runStatusLabel(detail.id)}</span>
+              {#if isWorking(detail.id)}<span class="agent-pulse" aria-hidden="true"></span>{/if}
+            </div>
+            {#if latestRun(detail.id)?.message}
+              <p class="agent-msg">{latestRun(detail.id).message}</p>
+            {:else if isWorking(detail.id)}
+              <p class="agent-msg muted">Waiting for the first progress note…</p>
+            {/if}
+          </div>
+        {/if}
+        {#if needPath && needPath.taskId === detail.id}
+          <div class="path-prompt">
+            <p>Where is project <strong>{needPath.project === "_" ? "(global)" : needPath.project}</strong> on disk?</p>
+            <input bind:value={pathInput} placeholder="/home/you/sites/…" onkeydown={(e) => { if (e.key === "Enter") savePathAndRun(); }} />
+            <div class="modal-foot">
+              <button class="btn-ghost" onclick={() => (needPath = null)}>Cancel</button>
+              <button class="btn-primary" disabled={!pathInput.trim()} onclick={savePathAndRun}>Save &amp; Run</button>
+            </div>
+          </div>
+        {/if}
+        {#if runError}<p class="run-err">{runError}</p>{/if}
+      </div>
+    {/if}
     <div class="detail-body">
       {#if editing}
         <label class="field">
@@ -594,59 +666,18 @@
           <button class="btn-primary" disabled={!edit.title.trim()} onclick={saveEdit}>{@render iconCheck()}<span>Save</span></button>
         </div>
       {:else}
-        <h3 class="d-title">{detail.title}</h3>
-        <div class="d-chips">
-          <span class="d-status s-{detail.status}">{statusLabel(detail.status)}</span>
-          {#if detail.priority}<span class="pri pri-{detail.priority}">{detail.priority}</span>{/if}
-          {#each detail.tags ?? [] as tag}<span class="tag">{tag}</span>{/each}
-        </div>
-        {#if detail.description}
-          <p class="d-desc">{detail.description}</p>
-        {:else}
-          <p class="d-desc is-muted">No description</p>
-        {/if}
-        <dl class="d-meta">
-          {#if detail.project}<div><dt>Project</dt><dd>{detail.project}</dd></div>{/if}
-          {#if detail.due_date}<div><dt>Due</dt><dd>{detail.due_date}</dd></div>{/if}
-          {#if detail.handoff_to}<div><dt>Handoff</dt><dd>→ {detail.handoff_to}{detail.handoff_reason ? ": " + detail.handoff_reason : ""}</dd></div>{/if}
-          <div><dt>Created</dt><dd>{fmtDateTime(detail.created_at)}</dd></div>
-          <div><dt>Updated</dt><dd>{fmtDateTime(detail.updated_at)}</dd></div>
-        </dl>
-        <div class="d-move">
-          {#each COLUMNS.filter((x) => x.key !== detail.status) as m}
-            <button class="btn-ghost sm" onclick={() => moveFromDetail(m.key)}>Move to {m.label}</button>
-          {/each}
-          {#if isWorking(detail.id)}
-            <button class="btn-run cancel sm" onclick={() => cancelRun(detail.id)}>Cancel agent</button>
+        <div class="d-section">
+          <h4>Description</h4>
+          {#if detail.description}
+            <p class="d-desc">{detail.description}</p>
           {:else}
-            <button class="btn-run sm" onclick={() => runTask(detail.id)}>{@render iconPlay()}<span>Run</span></button>
+            <p class="d-desc is-muted">No description</p>
           {/if}
         </div>
-        {#if latestRun(detail.id) || isStarting(detail.id)}
-          <div class="agent-status detail s-{isStarting(detail.id) ? 'starting' : latestRun(detail.id).status}">
-            <span class="agent-label">{runStatusLabel(detail.id)}</span>
-            {#if latestRun(detail.id)?.message}
-              <p class="agent-msg">{latestRun(detail.id).message}</p>
-            {:else if isWorking(detail.id)}
-              <p class="agent-msg muted">Cursor is on it…</p>
-            {/if}
-          </div>
-        {/if}
-        {#if needPath && needPath.taskId === detail.id}
-          <div class="path-prompt">
-            <p>Where is project <strong>{needPath.project === "_" ? "(global)" : needPath.project}</strong> on disk?</p>
-            <input bind:value={pathInput} placeholder="/home/you/sites/…" onkeydown={(e) => { if (e.key === "Enter") savePathAndRun(); }} />
-            <div class="modal-foot">
-              <button class="btn-ghost" onclick={() => (needPath = null)}>Cancel</button>
-              <button class="btn-primary" disabled={!pathInput.trim()} onclick={savePathAndRun}>Save &amp; Run</button>
-            </div>
-          </div>
-        {/if}
-        {#if runError}<p class="run-err">{runError}</p>{/if}
         <div class="d-section">
-          <h4>Notes</h4>
+          <h4>Notes {(detail.notes ?? []).length ? `(${detail.notes.length})` : ""}</h4>
           {#if (detail.notes ?? []).length === 0}<div class="empty sm">No notes yet</div>{/if}
-          {#each detail.notes ?? [] as n (n.id)}
+          {#each [...(detail.notes ?? [])].reverse() as n (n.id)}
             <div class="d-note"><p>{n.body}</p><span class="ev-time">{fmtDateTime(n.created_at)}</span></div>
           {/each}
           <div class="d-note-add">
@@ -654,6 +685,11 @@
             <button class="btn-primary sm" disabled={!noteBody.trim()} onclick={addNote}>Add</button>
           </div>
         </div>
+        <dl class="d-meta">
+          <div><dt>Created</dt><dd>{fmtDateTime(detail.created_at)}</dd></div>
+          <div><dt>Updated</dt><dd>{fmtDateTime(detail.updated_at)}</dd></div>
+          {#if detail.handoff_reason}<div><dt>Handoff</dt><dd>{detail.handoff_reason}</dd></div>{/if}
+        </dl>
       {/if}
     </div>
   </aside>
@@ -980,21 +1016,38 @@
     background: var(--surface); border-left: 1px solid var(--border);
     display: flex; flex-direction: column; animation: slide .2s ease;
   }
+  .detail.is-working { border-left-color: color-mix(in srgb, var(--prog) 55%, var(--border)); }
+  .d-id {
+    font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 700;
+    color: var(--muted); letter-spacing: .02em;
+  }
   .head-actions { display: flex; align-items: center; gap: 6px; }
-  .detail-body { flex: 1; overflow-y: auto; padding: 18px 18px calc(24px + env(safe-area-inset-bottom)); }
-  .d-title { margin: 0 0 12px; font-size: 18px; font-weight: 700; line-height: 1.3; letter-spacing: -.01em; word-break: break-word; }
-  .d-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .d-sticky {
+    flex: 0 0 auto; padding: 14px 18px 12px; border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--surface) 92%, var(--prog) 8%);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .detail:not(.is-working) .d-sticky { background: var(--surface); }
+  .detail-body { flex: 1; overflow-y: auto; padding: 16px 18px calc(24px + env(safe-area-inset-bottom)); }
+  .d-title { margin: 0; font-size: 18px; font-weight: 700; line-height: 1.3; letter-spacing: -.01em; word-break: break-word; }
+  .d-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .d-status { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
   .s-todo { color: var(--todo); background: color-mix(in srgb, var(--todo) 18%, transparent); }
   .s-in_progress { color: var(--prog); background: color-mix(in srgb, var(--prog) 15%, transparent); }
   .s-done { color: var(--done); background: color-mix(in srgb, var(--done) 15%, transparent); }
-  .d-desc { font-size: 14px; line-height: 1.55; color: var(--text); white-space: pre-wrap; word-break: break-word; margin: 0 0 18px; }
+  .d-facts {
+    display: flex; flex-wrap: wrap; gap: 6px 14px; padding-top: 2px;
+    font-size: 12px; color: var(--text); border-top: 1px solid var(--border); padding-top: 10px;
+  }
+  .d-facts em { font-style: normal; font-weight: 600; color: var(--muted); margin-right: 4px; }
+  .d-desc { font-size: 14px; line-height: 1.55; color: var(--text); white-space: pre-wrap; word-break: break-word; margin: 0 0 8px; }
   .d-desc.is-muted { color: var(--muted); font-style: italic; }
-  .d-meta { display: flex; flex-direction: column; gap: 8px; margin: 0 0 18px; padding: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; }
+  .d-meta { display: flex; flex-direction: column; gap: 8px; margin: 18px 0 0; padding: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; }
   .d-meta > div { display: flex; gap: 10px; font-size: 13px; }
   .d-meta dt { flex: 0 0 74px; color: var(--muted); font-weight: 600; margin: 0; }
   .d-meta dd { margin: 0; color: var(--text); word-break: break-word; }
-  .d-move { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+  .d-move { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+  .d-section { margin-bottom: 18px; }
   .d-section h4 { margin: 0 0 10px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
   .d-note { padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); margin-bottom: 8px; }
   .d-note p { margin: 0 0 4px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
@@ -1004,6 +1057,19 @@
     background: var(--surface-2); color: var(--text); font-family: inherit; font-size: 16px;
   }
   .d-note-add input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .agent-row { display: flex; align-items: center; gap: 8px; }
+  .agent-pulse {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--prog);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--prog) 60%, transparent);
+    animation: pulse 1.4s ease-out infinite;
+  }
+  .agent-status.detail { margin: 0; max-height: 140px; overflow-y: auto; }
+  .agent-status.detail .agent-msg { -webkit-line-clamp: 5; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--prog) 55%, transparent); }
+    70% { box-shadow: 0 0 0 8px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
   .detail-body textarea {
     width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
     background: var(--surface-2); color: var(--text); font-family: inherit; font-size: 16px; line-height: 1.5; resize: vertical;

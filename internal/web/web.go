@@ -86,13 +86,26 @@ func HandlerConfig(cfg Config) http.Handler {
 	mux.HandleFunc("/api/tasks/", func(w http.ResponseWriter, r *http.Request) {
 		trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/tasks/"), "/")
 		parts := strings.Split(trimmed, "/")
-		if len(parts) < 2 || len(parts) > 3 {
+		if len(parts) < 1 || len(parts) > 3 || parts[0] == "" {
 			http.NotFound(w, r)
 			return
 		}
 		id, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
 			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		if len(parts) == 1 {
+			if r.Method != http.MethodGet {
+				http.Error(w, "GET only", http.StatusMethodNotAllowed)
+				return
+			}
+			tk, err := st.GetTask(id)
+			if errors.Is(err, store.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			writeJSON(w, tk, err)
 			return
 		}
 		action := parts[1]
