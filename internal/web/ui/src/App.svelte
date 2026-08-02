@@ -28,7 +28,8 @@
   let edit = $state({ title: "", description: "", priority: "", due_date: "", tags: "" });
   let noteBody = $state("");
   let pendingQuestions = $state([]);
-  let activeRuns = $state([]);
+  let latestByTask = $state({}); // task_id -> latest run
+  let startingIds = $state({}); // task_id -> true while POST /run in flight
   let projectPaths = $state([]);
   let showProjects = $state(false);
   let needPath = $state(null); // { project, taskId }
@@ -51,14 +52,37 @@
   }
   async function loadAgentState() {
     pendingQuestions = await (await fetch("/api/questions?status=pending")).json();
-    activeRuns = await (await fetch("/api/runs?status=running")).json();
+    const runs = await (await fetch("/api/runs")).json();
+    const map = {};
+    for (const r of runs ?? []) {
+      if (map[r.task_id] == null) map[r.task_id] = r; // ListRuns is id DESC
+    }
+    latestByTask = map;
     projectPaths = await (await fetch("/api/projects/paths")).json();
+  }
+  function latestRun(id) {
+    return latestByTask[id] ?? null;
   }
   function taskHasPending(id) {
     return pendingQuestions.some((q) => q.task_id === id);
   }
-  function activeRunFor(id) {
-    return activeRuns.find((r) => r.task_id === id) ?? null;
+  function isStarting(id) {
+    return !!startingIds[id];
+  }
+  function isWorking(id) {
+    return isStarting(id) || latestRun(id)?.status === "running";
+  }
+  function runStatusLabel(id) {
+    if (isStarting(id)) return "Starting…";
+    const r = latestRun(id);
+    if (!r) return "";
+    switch (r.status) {
+      case "running": return "Working…";
+      case "exited": return "Done";
+      case "failed": return "Failed";
+      case "killed": return "Cancelled";
+      default: return r.status;
+    }
   }
   function openAskFor(id) {
     return pendingQuestions.find((q) => q.task_id === id) ?? pendingQuestions[0] ?? null;
@@ -66,24 +90,37 @@
   async function runTask(id) {
     runError = "";
     needPath = null;
-    const resp = await fetch(`/api/tasks/${id}/run`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agent: "cursor" }),
-    });
-    if (resp.status === 409) {
-      const body = await resp.json();
-      if (body.need_path) {
-        needPath = { project: body.project, taskId: id };
-        pathInput = "";
+    startingIds = { ...startingIds, [id]: true };
+    try {
+      const resp = await fetch(`/api/tasks/${id}/run`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent: "cursor" }),
+      });
+      if (resp.status === 409) {
+        const body = await resp.json();
+        if (body.need_path) {
+          needPath = { project: body.project, taskId: id };
+          pathInput = "";
+          if (!detail || detail.id !== id) {
+            const t = findTask(id);
+            if (t) openDetail(t);
+          }
+          return;
+        }
+        runError = body.error || "Conflict";
         return;
       }
+      if (!resp.ok) {
+        runError = await resp.text();
+        return;
+      }
+      await load();
+      if (detail?.id === id) detail = findTask(id);
+    } finally {
+      const next = { ...startingIds };
+      delete next[id];
+      startingIds = next;
     }
-    if (!resp.ok) {
-      runError = await resp.text();
-      return;
-    }
-    await load();
-    if (detail) detail = findTask(detail.id);
   }
   async function savePathAndRun() {
     if (!needPath || !pathInput.trim()) return;
@@ -272,15 +309,18 @@
 
   function toggleActivity() { showActivity = !showActivity; if (showActivity) unseen = 0; }
 
-  // Close the open card menu on any outside click, without a full-screen
-  // backdrop that would swallow clicks on other cards' menu buttons.
+  // Close the open card menu on outside click (defer so the opening click doesn't close it).
   $effect(() => {
     if (openMenu === null) return;
-    const onDocClick = (e) => {
-      if (!e.target.closest(".menu") && !e.target.closest(".menu-btn")) openMenu = null;
-    };
-    window.addEventListener("click", onDocClick);
-    return () => window.removeEventListener("click", onDocClick);
+    let remove = () => {};
+    const timer = setTimeout(() => {
+      const onDocClick = (e) => {
+        if (!e.target.closest(".menu") && !e.target.closest(".menu-btn")) openMenu = null;
+      };
+      window.addEventListener("click", onDocClick);
+      remove = () => window.removeEventListener("click", onDocClick);
+    }, 0);
+    return () => { clearTimeout(timer); remove(); };
   });
 </script>
 
@@ -380,35 +420,61 @@
           <article
             class="card"
             class:menu-open={openMenu === t.id}
+            class:working={isWorking(t.id)}
+            class:run-failed={latestRun(t.id)?.status === "failed"}
+            class:run-done={latestRun(t.id)?.status === "exited"}
             draggable="true"
             ondragstart={(e) => onDragStart(e, t.id)}
           >
             <div class="card-top">
               <button class="title" onclick={() => openDetail(t)}>{t.title}</button>
-              <button class="menu-btn" aria-label="Task actions" onclick={() => (openMenu = openMenu === t.id ? null : t.id)}>
+              <button
+                class="menu-btn"
+                aria-label="Task actions"
+                aria-expanded={openMenu === t.id}
+                onclick={(e) => { e.stopPropagation(); openMenu = openMenu === t.id ? null : t.id; }}
+              >
                 {@render iconMore()}
               </button>
             </div>
-            {#if t.priority || (t.tags && t.tags.length) || t.handoff_to || taskHasPending(t.id) || activeRunFor(t.id)}
+            {#if t.priority || (t.tags && t.tags.length) || t.handoff_to || taskHasPending(t.id)}
               <div class="meta">
                 {#if t.priority}<span class="pri pri-{t.priority}">{t.priority}</span>{/if}
                 {#each t.tags ?? [] as tag}<span class="tag">{tag}</span>{/each}
                 {#if t.handoff_to}<span class="hbadge">{@render iconHandoff()}{t.handoff_to}</span>{/if}
-                {#if activeRunFor(t.id)}<span class="runbadge">running</span>{/if}
                 {#if taskHasPending(t.id)}<span class="askbadge">asks</span>{/if}
               </div>
             {/if}
-            {#if openMenu === t.id}
-              <div class="menu" role="menu">
-                {#each COLUMNS.filter((x) => x.key !== t.status) as m}
-                  <button role="menuitem" onclick={() => move(t.id, m.key)}>Move to {m.label}</button>
-                {/each}
-                {#if activeRunFor(t.id)}
-                  <button role="menuitem" onclick={() => cancelRun(t.id)}>Cancel agent</button>
-                {:else}
-                  <button role="menuitem" onclick={() => { openMenu = null; openDetail(t); runTask(t.id); }}>Run with Cursor</button>
+            {#if latestRun(t.id) || isStarting(t.id)}
+              <div class="agent-status s-{isStarting(t.id) ? 'starting' : latestRun(t.id).status}">
+                <span class="agent-label">{runStatusLabel(t.id)}</span>
+                {#if latestRun(t.id)?.message}
+                  <p class="agent-msg">{latestRun(t.id).message}</p>
+                {:else if isWorking(t.id)}
+                  <p class="agent-msg muted">Cursor is on it…</p>
                 {/if}
-                <button role="menuitem" class="danger" onclick={() => archive(t.id)}>Archive</button>
+              </div>
+            {/if}
+            <div class="card-actions">
+              {#if isWorking(t.id)}
+                <button
+                  class="btn-run cancel"
+                  disabled={isStarting(t.id) && latestRun(t.id)?.status !== "running"}
+                  onclick={(e) => { e.stopPropagation(); cancelRun(t.id); }}
+                >Cancel</button>
+              {:else}
+                <button
+                  class="btn-run"
+                  onclick={(e) => { e.stopPropagation(); openMenu = null; runTask(t.id); }}
+                >{@render iconPlay()}<span>Run</span></button>
+              {/if}
+            </div>
+            {#if openMenu === t.id}
+              <div class="menu" role="menu" onclick={(e) => e.stopPropagation()}>
+                {#each COLUMNS.filter((x) => x.key !== t.status) as m}
+                  <button role="menuitem" onclick={() => { openMenu = null; move(t.id, m.key); }}>Move to {m.label}</button>
+                {/each}
+                <button role="menuitem" class="danger" onclick={() => { openMenu = null; archive(t.id); }}>Archive</button>
               </div>
             {/if}
           </article>
@@ -550,13 +616,22 @@
           {#each COLUMNS.filter((x) => x.key !== detail.status) as m}
             <button class="btn-ghost sm" onclick={() => moveFromDetail(m.key)}>Move to {m.label}</button>
           {/each}
-          {#if activeRunFor(detail.id)}
-            <span class="runbadge">Cursor running</span>
-            <button class="btn-ghost sm danger" onclick={() => cancelRun(detail.id)}>Cancel</button>
+          {#if isWorking(detail.id)}
+            <button class="btn-run cancel sm" onclick={() => cancelRun(detail.id)}>Cancel agent</button>
           {:else}
-            <button class="btn-primary sm" onclick={() => runTask(detail.id)}>{@render iconPlay()}<span>Run</span></button>
+            <button class="btn-run sm" onclick={() => runTask(detail.id)}>{@render iconPlay()}<span>Run</span></button>
           {/if}
         </div>
+        {#if latestRun(detail.id) || isStarting(detail.id)}
+          <div class="agent-status detail s-{isStarting(detail.id) ? 'starting' : latestRun(detail.id).status}">
+            <span class="agent-label">{runStatusLabel(detail.id)}</span>
+            {#if latestRun(detail.id)?.message}
+              <p class="agent-msg">{latestRun(detail.id).message}</p>
+            {:else if isWorking(detail.id)}
+              <p class="agent-msg muted">Cursor is on it…</p>
+            {/if}
+          </div>
+        {/if}
         {#if needPath && needPath.taskId === detail.id}
           <div class="path-prompt">
             <p>Where is project <strong>{needPath.project === "_" ? "(global)" : needPath.project}</strong> on disk?</p>
@@ -650,12 +725,57 @@
   .proj-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .proj-name { font-size: 12px; color: var(--amber); min-width: 72px; }
   .proj-path { flex: 1; min-width: 180px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }
-  .runbadge, .askbadge {
+  .askbadge {
     font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em;
     padding: 2px 7px; border-radius: 999px;
+    color: var(--amber); background: color-mix(in srgb, var(--amber) 18%, transparent);
   }
-  .runbadge { color: var(--prog); background: color-mix(in srgb, var(--prog) 18%, transparent); }
-  .askbadge { color: var(--amber); background: color-mix(in srgb, var(--amber) 18%, transparent); }
+  .card-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .btn-run {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    min-height: 34px; padding: 0 12px; border-radius: 9px; border: none;
+    background: var(--prog); color: #fff; font-family: inherit; font-size: 13px; font-weight: 700;
+    cursor: pointer; transition: filter .12s ease, transform .08s ease, opacity .12s ease;
+  }
+  .btn-run svg { width: 14px; height: 14px; }
+  .btn-run:hover { filter: brightness(1.08); }
+  .btn-run:active { transform: scale(.97); }
+  .btn-run:disabled { opacity: .55; cursor: wait; }
+  .btn-run.cancel { background: color-mix(in srgb, var(--danger) 85%, #000); }
+  .btn-run.sm { min-height: 32px; padding: 0 10px; font-size: 12px; }
+  .agent-status {
+    margin-top: 10px; padding: 8px 10px; border-radius: 9px;
+    border: 1px solid var(--border); background: var(--surface-2);
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .agent-status.detail { margin: 0 0 16px; }
+  .agent-status.s-starting, .agent-status.s-running {
+    border-color: color-mix(in srgb, var(--prog) 45%, var(--border));
+    background: color-mix(in srgb, var(--prog) 10%, var(--surface-2));
+  }
+  .agent-status.s-exited {
+    border-color: color-mix(in srgb, var(--done) 45%, var(--border));
+    background: color-mix(in srgb, var(--done) 10%, var(--surface-2));
+  }
+  .agent-status.s-failed, .agent-status.s-killed {
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+    background: color-mix(in srgb, var(--danger) 10%, var(--surface-2));
+  }
+  .agent-label {
+    font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--prog);
+  }
+  .agent-status.s-exited .agent-label { color: var(--done); }
+  .agent-status.s-failed .agent-label, .agent-status.s-killed .agent-label { color: var(--danger); }
+  .agent-msg {
+    margin: 0; font-size: 12px; line-height: 1.4; color: var(--text);
+    white-space: pre-wrap; word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .agent-msg.muted { color: var(--muted); -webkit-line-clamp: 2; }
+  .card.working { box-shadow: 0 0 0 1px color-mix(in srgb, var(--prog) 50%, transparent), var(--shadow); }
+  .card.run-failed { box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent), var(--shadow); }
+  .card.run-done { box-shadow: 0 0 0 1px color-mix(in srgb, var(--done) 35%, transparent), var(--shadow); }
   .path-prompt {
     margin-top: 12px; padding: 12px; border-radius: 10px; border: 1px solid var(--border);
     background: var(--surface-2); display: flex; flex-direction: column; gap: 8px;
@@ -761,7 +881,7 @@
   }
   .card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); transform: translateY(-1px); }
   .card:active { cursor: grabbing; }
-  .card.menu-open { z-index: 40; } /* lift above sibling cards so the action menu isn't covered */
+  .card.menu-open { z-index: 50; } /* lift above sibling cards so the action menu isn't covered */
   .card-top { display: flex; align-items: flex-start; gap: 8px; }
   .title {
     margin: 0; padding: 0; flex: 1; text-align: left; border: none; background: transparent;
@@ -787,7 +907,7 @@
   .hbadge svg { width: 12px; height: 12px; }
 
   .menu {
-    position: absolute; top: 40px; right: 10px; z-index: 30; min-width: 168px; padding: 6px;
+    position: absolute; top: 40px; right: 10px; z-index: 80; min-width: 168px; padding: 6px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
     box-shadow: 0 8px 28px rgba(0,0,0,.35); display: flex; flex-direction: column; gap: 2px;
     animation: popmenu .12s ease;

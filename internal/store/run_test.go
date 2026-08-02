@@ -27,12 +27,16 @@ func TestFinishRunCancelsQuestions(t *testing.T) {
 	r, _ := st.CreateRun(tk.ID, "cursor", 1)
 	q, _ := st.CreateQuestion(tk.ID, "q?")
 	code := 1
-	if _, err := st.FinishRun(r.ID, "failed", &code); err != nil {
+	if _, err := st.FinishRun(r.ID, "failed", &code, "boom"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := st.GetQuestion(q.ID)
 	if got.Status != "cancelled" {
 		t.Fatalf("%+v", got)
+	}
+	fin, _ := st.GetRun(r.ID)
+	if fin.Message != "boom" || fin.Status != "failed" {
+		t.Fatalf("finish: %+v", fin)
 	}
 }
 

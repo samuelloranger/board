@@ -16,6 +16,7 @@ type Run struct {
 	StartedAt string  `json:"started_at"`
 	EndedAt   *string `json:"ended_at,omitempty"`
 	ExitCode  *int    `json:"exit_code,omitempty"`
+	Message   string  `json:"message,omitempty"`
 }
 
 var ErrRunActive = errors.New("task already has a running agent")
@@ -34,7 +35,7 @@ func (s *Store) CreateRun(taskID int64, agent string, pid int) (*Run, error) {
 	}
 	ts := now()
 	res, err := s.db.Exec(
-		`INSERT INTO runs (task_id, agent, pid, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
+		`INSERT INTO runs (task_id, agent, pid, status, started_at, message) VALUES (?, ?, ?, 'running', ?, '')`,
 		taskID, agent, pid, ts,
 	)
 	if err != nil {
@@ -62,8 +63,8 @@ func (s *Store) GetRun(id int64) (*Run, error) {
 	var pid, exitCode sql.NullInt64
 	var endedAt sql.NullString
 	err := s.db.QueryRow(
-		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code FROM runs WHERE id = ?`, id,
-	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode)
+		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message FROM runs WHERE id = ?`, id,
+	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -89,7 +90,7 @@ func scanRunExtras(r *Run, pid sql.NullInt64, endedAt sql.NullString, exitCode s
 }
 
 func (s *Store) ListRuns(taskID *int64, status string) ([]Run, error) {
-	q := `SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code FROM runs WHERE 1=1`
+	q := `SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message FROM runs WHERE 1=1`
 	args := []any{}
 	if taskID != nil {
 		q += ` AND task_id = ?`
@@ -110,7 +111,7 @@ func (s *Store) ListRuns(taskID *int64, status string) ([]Run, error) {
 		var r Run
 		var pid, exitCode sql.NullInt64
 		var endedAt sql.NullString
-		if err := rows.Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode); err != nil {
+		if err := rows.Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message); err != nil {
 			return nil, err
 		}
 		scanRunExtras(&r, pid, endedAt, exitCode)
@@ -124,9 +125,9 @@ func (s *Store) ActiveRunForTask(taskID int64) (*Run, error) {
 	var pid, exitCode sql.NullInt64
 	var endedAt sql.NullString
 	err := s.db.QueryRow(
-		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code
+		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message
 		 FROM runs WHERE task_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1`, taskID,
-	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode)
+	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -137,7 +138,19 @@ func (s *Store) ActiveRunForTask(taskID int64) (*Run, error) {
 	return &r, nil
 }
 
-func (s *Store) FinishRun(id int64, status string, exitCode *int) (*Run, error) {
+// LatestRunForTask returns the most recent run for a task (any status).
+func (s *Store) LatestRunForTask(taskID int64) (*Run, error) {
+	runs, err := s.ListRuns(&taskID, "")
+	if err != nil {
+		return nil, err
+	}
+	if len(runs) == 0 {
+		return nil, ErrNotFound
+	}
+	return &runs[0], nil
+}
+
+func (s *Store) FinishRun(id int64, status string, exitCode *int, message string) (*Run, error) {
 	switch status {
 	case "exited", "failed", "killed":
 	default:
@@ -152,8 +165,8 @@ func (s *Store) FinishRun(id int64, status string, exitCode *int) (*Run, error) 
 	}
 	ts := now()
 	_, err = s.db.Exec(
-		`UPDATE runs SET status = ?, ended_at = ?, exit_code = ? WHERE id = ?`,
-		status, ts, exitCode, id,
+		`UPDATE runs SET status = ?, ended_at = ?, exit_code = ?, message = ? WHERE id = ?`,
+		status, ts, exitCode, message, id,
 	)
 	if err != nil {
 		return nil, err
@@ -162,11 +175,20 @@ func (s *Store) FinishRun(id int64, status string, exitCode *int) (*Run, error) 
 		return nil, err
 	}
 	detail := status
-	if exitCode != nil {
+	if message != "" {
+		detail = status + ": " + truncate(message, 60)
+	} else if exitCode != nil {
 		detail = fmt.Sprintf("%s (%d)", status, *exitCode)
 	}
 	s.emit(&r.TaskID, "run_done", detail)
 	return s.GetRun(id)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // ReconcileOrphanRuns marks running rows whose process is dead as failed.
@@ -186,7 +208,7 @@ func (s *Store) ReconcileOrphanRuns(alive func(pid int) bool) (int, error) {
 			continue
 		}
 		code := -1
-		if _, err := s.FinishRun(r.ID, "failed", &code); err != nil {
+		if _, err := s.FinishRun(r.ID, "failed", &code, "process gone after serve restart"); err != nil {
 			return n, err
 		}
 		n++

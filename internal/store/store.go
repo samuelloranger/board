@@ -122,6 +122,8 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate extra: %w", err)
 	}
+	// Additive column for agent summary text (existing DBs already created runs).
+	_, _ = db.Exec(`ALTER TABLE runs ADD COLUMN message TEXT NOT NULL DEFAULT ''`)
 	return &Store{db: db}, nil
 }
 
@@ -148,7 +150,8 @@ CREATE TABLE IF NOT EXISTS runs (
   status     TEXT NOT NULL CHECK(status IN ('running','exited','failed','killed')),
   started_at TEXT NOT NULL,
   ended_at   TEXT,
-  exit_code  INTEGER
+  exit_code  INTEGER,
+  message    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_questions_task ON questions(task_id);
 CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);

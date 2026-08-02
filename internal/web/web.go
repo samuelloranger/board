@@ -387,7 +387,7 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, runner a
 	procs[run.ID] = procEntry{kill: started.Kill}
 	mu.Unlock()
 	go func(runID int64) {
-		code, waitErr := started.Wait()
+		code, output, waitErr := started.Wait()
 		mu.Lock()
 		delete(procs, runID)
 		mu.Unlock()
@@ -396,7 +396,7 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, runner a
 			status = "failed"
 		}
 		ec := code
-		_, _ = st.FinishRun(runID, status, &ec)
+		_, _ = st.FinishRun(runID, status, &ec, output)
 	}(run.ID)
 	writeJSON(w, map[string]any{
 		"run_id":  run.ID,
@@ -430,7 +430,7 @@ func handleRunCancel(w http.ResponseWriter, r *http.Request, st *store.Store, ta
 			_ = p.Kill()
 		}
 	}
-	finished, err := st.FinishRun(run.ID, "killed", nil)
+	finished, err := st.FinishRun(run.ID, "killed", nil, "cancelled from board UI")
 	mu.Lock()
 	delete(procs, run.ID)
 	mu.Unlock()
