@@ -117,7 +117,43 @@ func Open(path string) (*Store, error) {
 		// ADD COLUMN is a no-op-safe migration; ignore "duplicate column" errors.
 		_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN " + col + " TEXT")
 	}
+	// Additive tables for FE agent Run + ask_user (never edit the base schema string).
+	if _, err := db.Exec(extraTables); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate extra: %w", err)
+	}
 	return &Store{db: db}, nil
 }
+
+const extraTables = `
+CREATE TABLE IF NOT EXISTS project_paths (
+  project    TEXT PRIMARY KEY,
+  path       TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS questions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  question    TEXT NOT NULL,
+  answer      TEXT,
+  status      TEXT NOT NULL CHECK(status IN ('pending','answered','cancelled')),
+  created_at  TEXT NOT NULL,
+  answered_at TEXT
+);
+CREATE TABLE IF NOT EXISTS runs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  agent      TEXT NOT NULL,
+  pid        INTEGER,
+  status     TEXT NOT NULL CHECK(status IN ('running','exited','failed','killed')),
+  started_at TEXT NOT NULL,
+  ended_at   TEXT,
+  exit_code  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_questions_task ON questions(task_id);
+CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
+CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id);
+CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
+`
 
 func (s *Store) Close() error { return s.db.Close() }
