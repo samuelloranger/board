@@ -255,21 +255,28 @@ func TestSetRunWaitTool(t *testing.T) {
 	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t"})
 	cs := connect(t, st, nil)
 	ctx := context.Background()
-	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "set_run_wait",
-		Arguments: map[string]any{"task_id": tk.ID, "wait": "ci"},
-	}); err == nil {
-		t.Fatal("expected error with no active run")
-	}
-	if _, err := st.CreateRun(tk.ID, "cursor", 1); err != nil {
-		t.Fatal(err)
-	}
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "set_run_wait",
 		Arguments: map[string]any{"task_id": tk.ID, "wait": "ci"},
 	})
 	if err != nil {
+		t.Fatalf("CallTool transport: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatal("expected tool error with no active run")
+	}
+	if _, err := st.CreateRun(tk.ID, "cursor", 1); err != nil {
+		t.Fatal(err)
+	}
+	res, err = cs.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "set_run_wait",
+		Arguments: map[string]any{"task_id": tk.ID, "wait": "ci"},
+	})
+	if err != nil {
 		t.Fatalf("set_run_wait: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %+v", res)
 	}
 	m := structOut(t, res)
 	if m["wait"] != "ci" {

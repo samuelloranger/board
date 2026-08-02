@@ -1,4 +1,6 @@
 <script>
+  import { renderMd } from "./md.js";
+
   const COLUMNS = [
     { key: "todo", label: "To-Do", dot: "var(--todo)" },
     { key: "in_progress", label: "In Progress", dot: "var(--prog)" },
@@ -22,11 +24,14 @@
   let dragOver = $state(null);
   let addTitle = $state("");
   let addPriority = $state("");
+  let addProject = $state("");
   let unseen = $state(0);
   let detail = $state(null);
   let editing = $state(false);
-  let edit = $state({ title: "", description: "", priority: "", due_date: "", tags: "" });
+  let edit = $state({ title: "", description: "", priority: "", due_date: "", tags: "", project: "" });
   let noteBody = $state("");
+  let seenNoteIds = $state(new Set());
+  let animNoteIds = $state({}); // id -> true while entrance animation plays
   let pendingQuestions = $state([]);
   let latestByTask = $state({}); // task_id -> latest run
   let startingIds = $state({}); // task_id -> true while POST /run in flight
@@ -36,6 +41,8 @@
   let pathInput = $state("");
   let runError = $state("");
   let answerDraft = $state("");
+  let projectFilter = $state("*"); // "*" = All
+  let showNotifyBanner = $state(false);
 
   function applyTheme(t) {
     theme = t;
@@ -44,9 +51,22 @@
   }
   function toggleTheme() { applyTheme(theme === "dark" ? "light" : "dark"); }
 
+  function loadProjectFilter() {
+    try {
+      const v = localStorage.getItem("board-project-filter");
+      if (v) projectFilter = v;
+    } catch {}
+  }
+  function setProjectFilter(v) {
+    projectFilter = v;
+    try { localStorage.setItem("board-project-filter", v); } catch {}
+    load();
+  }
+
   async function load() {
-    board = await (await fetch("/api/board?project=*")).json();
-    const res = await (await fetch("/api/resume?project=*")).json();
+    const q = projectFilter === "*" ? "*" : projectFilter;
+    board = await (await fetch(`/api/board?project=${encodeURIComponent(q)}`)).json();
+    const res = await (await fetch(`/api/resume?project=${encodeURIComponent(q)}`)).json();
     handoffs = res.handoffs ?? [];
     await loadAgentState();
   }
@@ -84,8 +104,65 @@
       default: return r.status;
     }
   }
-  function openAskFor(id) {
-    return pendingQuestions.find((q) => q.task_id === id) ?? pendingQuestions[0] ?? null;
+  function waitStatusLabel(id) {
+    if (pendingAskFor(id)) return "Waiting on you";
+    const r = latestRun(id);
+    if (r?.status === "running" && r.wait === "ci") return "Waiting on CI";
+    return runStatusLabel(id);
+  }
+  function waitStatusClass(id) {
+    if (pendingAskFor(id)) return "waiting-you";
+    const r = latestRun(id);
+    if (r?.status === "running" && r.wait === "ci") return "waiting-ci";
+    if (isStarting(id)) return "starting";
+    return r?.status || "";
+  }
+  function noteAuthorLabel(author) {
+    if (author === "human") return "You";
+    if (author === "agent") return "Agent";
+    return "Note";
+  }
+  function pendingAskFor(id) {
+    if (id == null) return null;
+    return pendingQuestions.find((q) => q.task_id === id) ?? null;
+  }
+  function maybeShowNotifyBanner() {
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "default") return;
+    try {
+      if (localStorage.getItem("board-notify-ask-dismissed") === "1") return;
+    } catch {}
+    showNotifyBanner = true;
+  }
+  async function enableAskNotify() {
+    showNotifyBanner = false;
+    if (typeof Notification === "undefined") return;
+    await Notification.requestPermission();
+  }
+  function dismissNotifyBanner() {
+    showNotifyBanner = false;
+    try { localStorage.setItem("board-notify-ask-dismissed", "1"); } catch {}
+  }
+  function notifyAsk(taskId, question) {
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "granted") return;
+    if (!document.hidden && detail?.id === taskId) return;
+    const n = new Notification("Agent asks", {
+      body: String(question || "").slice(0, 80),
+      tag: "board-ask-" + taskId,
+    });
+    n.onclick = () => {
+      window.focus();
+      openDetail(findTask(taskId) ?? { id: taskId });
+      n.close();
+    };
+  }
+  function eventVisible(e) {
+    if (projectFilter === "*") return true;
+    if (!e.task_id) return true;
+    const t = findTask(e.task_id);
+    if (!t) return true;
+    return (t.project || "") === projectFilter || (projectFilter === "_" && !t.project);
   }
   async function runTask(id) {
     runError = "";
@@ -179,15 +256,29 @@
     await fetch(`/api/tasks/${id}/archive`, { method: "POST" });
     await load();
   }
+  async function clearHandoff(id, e) {
+    e?.stopPropagation();
+    await fetch(`/api/tasks/${id}/clear_handoff`, { method: "POST" });
+    await load();
+    if (detail?.id === id) await refreshDetail();
+  }
   async function createTask() {
     const title = addTitle.trim();
     if (!title) return;
+    const project = addProject.trim();
     await fetch("/api/tasks", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, status: "todo", priority: addPriority }),
+      body: JSON.stringify({
+        title, status: "todo", priority: addPriority,
+        ...(project ? { project } : {}),
+      }),
     });
-    addTitle = ""; addPriority = ""; showAdd = false;
+    addTitle = ""; addPriority = ""; addProject = ""; showAdd = false;
     await load();
+  }
+
+  function projectLabel(p) {
+    return p && String(p).trim() ? p : "global";
   }
 
   function findTask(id) {
@@ -197,28 +288,76 @@
     }
     return null;
   }
+  function taskIdFromURL() {
+    const id = Number(new URLSearchParams(location.search).get("task"));
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }
+  function setTaskURL(id, { replace = false } = {}) {
+    const url = new URL(location.href);
+    if (id == null) url.searchParams.delete("task");
+    else url.searchParams.set("task", String(id));
+    const next = url.pathname + url.search + url.hash;
+    const cur = location.pathname + location.search + location.hash;
+    if (next === cur) return;
+    if (replace) history.replaceState({ task: id }, "", next);
+    else history.pushState({ task: id }, "", next);
+  }
   function statusLabel(s) { return (COLUMNS.find((c) => c.key === s) || {}).label ?? s; }
   async function fetchTask(id) {
     const resp = await fetch(`/api/tasks/${id}`);
     if (!resp.ok) return null;
     return await resp.json();
   }
-  async function openDetail(t) {
+  async function openDetail(t, { skipURL = false, replaceURL = false } = {}) {
     editing = false; noteBody = ""; runError = ""; needPath = null;
+    animNoteIds = {};
     detail = t; // show immediately from board card
+    if (!skipURL) {
+      if (taskIdFromURL() === t.id || replaceURL) setTaskURL(t.id, { replace: true });
+      else setTaskURL(t.id);
+    }
     const full = await fetchTask(t.id);
-    if (full && detail?.id === t.id) detail = full;
+    if (full && detail?.id === t.id) {
+      detail = full;
+      seenNoteIds = new Set((full.notes ?? []).map((n) => n.id));
+    } else if (!full && detail?.id === t.id && !t.title) {
+      // Deep-linked to a missing/archived task — clear URL, close.
+      closeDetail({ skipURL: false });
+      return;
+    } else {
+      seenNoteIds = new Set();
+    }
+  }
+  function applyNoteEntrance(notes) {
+    const ids = (notes ?? []).map((n) => n.id);
+    const fresh = ids.filter((id) => !seenNoteIds.has(id));
+    seenNoteIds = new Set([...seenNoteIds, ...ids]);
+    if (!fresh.length) return;
+    const next = { ...animNoteIds };
+    for (const id of fresh) next[id] = true;
+    animNoteIds = next;
+    setTimeout(() => {
+      const cleared = { ...animNoteIds };
+      for (const id of fresh) delete cleared[id];
+      animNoteIds = cleared;
+    }, 420);
   }
   async function refreshDetail() {
     if (!detail) return;
     const full = await fetchTask(detail.id);
-    if (full) detail = full;
-    else {
+    if (full) {
+      applyNoteEntrance(full.notes);
+      detail = full;
+    } else {
       const t = findTask(detail.id);
       if (t) detail = t;
     }
   }
-  function closeDetail() { detail = null; editing = false; needPath = null; runError = ""; }
+  function closeDetail({ skipURL = false } = {}) {
+    detail = null; editing = false; needPath = null; runError = "";
+    seenNoteIds = new Set(); animNoteIds = {};
+    if (!skipURL && taskIdFromURL() != null) setTaskURL(null);
+  }
   function startEdit() {
     edit = {
       title: detail.title ?? "",
@@ -226,6 +365,7 @@
       priority: detail.priority ?? "",
       due_date: detail.due_date ?? "",
       tags: (detail.tags ?? []).join(", "),
+      project: detail.project ?? "",
     };
     editing = true;
   }
@@ -238,6 +378,7 @@
       body: JSON.stringify({
         title, description: edit.description,
         priority: edit.priority, due_date: edit.due_date, tags,
+        project: edit.project.trim(),
       }),
     });
     await load();
@@ -271,8 +412,14 @@
     try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
     catch { return ""; }
   }
-  function fmtDateTime(iso) {
-    try { return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
+  function fmtDateTime(iso, { seconds = false } = {}) {
+    try {
+      return new Date(iso).toLocaleString([], {
+        month: "short", day: "numeric",
+        hour: "2-digit", minute: "2-digit",
+        ...(seconds ? { second: "2-digit" } : {}),
+      });
+    }
     catch { return ""; }
   }
   // Relative "3m", "2h", "4d" for compact activity timestamps.
@@ -303,7 +450,19 @@
     let saved = "dark";
     try { saved = localStorage.getItem("board-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"); } catch {}
     applyTheme(saved);
-    load();
+    loadProjectFilter();
+
+    let cancelled = false;
+    (async () => {
+      await load();
+      if (cancelled) return;
+      maybeShowNotifyBanner();
+      const id = taskIdFromURL();
+      if (id) {
+        const t = findTask(id) ?? { id };
+        await openDetail(t, { replaceURL: true });
+      }
+    })();
 
     // While the server replays its backlog, events are historical: fill the
     // feed but don't bump the unseen badge. The `synced` sentinel flips us live.
@@ -321,12 +480,33 @@
 
     const es = new EventSource("/api/events?since=0");
     es.onmessage = (m) => {
-      events = [JSON.parse(m.data), ...events].slice(0, 60);
+      const ev = JSON.parse(m.data);
+      events = [ev, ...events].slice(0, 60);
       if (!syncing && !showActivity) unseen = Math.min(unseen + 1, 99);
+      if (!syncing && ev.kind === "question" && ev.task_id) {
+        notifyAsk(ev.task_id, ev.detail);
+        if (!detail) openDetail(findTask(ev.task_id) ?? { id: ev.task_id });
+      }
       scheduleLoad();
     };
     es.addEventListener("synced", () => { syncing = false; });
-    return () => { clearTimeout(loadTimer); es.close(); };
+
+    const onPop = () => {
+      const id = taskIdFromURL();
+      if (id) {
+        if (detail?.id !== id) openDetail(findTask(id) ?? { id }, { skipURL: true });
+      } else if (detail) {
+        closeDetail({ skipURL: true });
+      }
+    };
+    window.addEventListener("popstate", onPop);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(loadTimer);
+      es.close();
+      window.removeEventListener("popstate", onPop);
+    };
   });
 
   function toggleActivity() { showActivity = !showActivity; if (showActivity) unseen = 0; }
@@ -381,6 +561,26 @@
   </div>
 </header>
 
+{#if showNotifyBanner}
+  <div class="notify-banner" role="status">
+    <span>Notify me when an agent asks</span>
+    <div class="notify-actions">
+      <button class="btn-primary sm" onclick={enableAskNotify}>Enable</button>
+      <button class="btn-ghost sm" onclick={dismissNotifyBanner}>Not now</button>
+    </div>
+  </div>
+{/if}
+
+<nav class="proj-filter" aria-label="Filter by project">
+  <button class:active={projectFilter === "*"} onclick={() => setProjectFilter("*")}>All</button>
+  {#each projectPaths as pp (pp.project)}
+    <button
+      class:active={projectFilter === pp.project}
+      onclick={() => setProjectFilter(pp.project)}
+    >{pp.project === "_" ? "global" : pp.project}</button>
+  {/each}
+</nav>
+
 {#if showProjects}
   <section class="projects-panel" aria-label="Project paths">
     <div class="lane-head"><span>Project paths</span>
@@ -404,10 +604,14 @@
     <div class="lane-head">{@render iconHandoff()}<span>Handoffs</span></div>
     <div class="lane-scroll">
       {#each handoffs as t (t.id)}
-        <div class="handoff-chip" class:human={t.handoff_to === "human"}>
+        <div class="handoff-chip" class:human={t.handoff_to === "human"} onclick={() => openDetail(t)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && openDetail(t)}>
           <span class="to">{t.handoff_to}</span>
           <span class="ht">{t.title}</span>
+          <span class="hp">{projectLabel(t.project)}</span>
           {#if t.handoff_reason}<span class="hr">{t.handoff_reason}</span>{/if}
+          <button class="chip-x" onclick={(e) => clearHandoff(t.id, e)} aria-label="Clear handoff" title="Clear handoff">
+            {@render iconClose()}
+          </button>
         </div>
       {/each}
     </div>
@@ -424,10 +628,12 @@
 
 <main class="board">
   {#each COLUMNS as c (c.key)}
-    <section
+    <div
       class="col"
       class:active={activeCol === c.key}
       class:drop={dragOver === c.key}
+      role="region"
+      aria-label={c.label}
       ondragover={(e) => { e.preventDefault(); dragOver = c.key; }}
       ondragleave={() => { if (dragOver === c.key) dragOver = null; }}
       ondrop={(e) => onDrop(e, c.key)}
@@ -459,20 +665,25 @@
                 {@render iconMore()}
               </button>
             </div>
-            {#if t.priority || (t.tags && t.tags.length) || t.handoff_to || taskHasPending(t.id)}
-              <div class="meta">
-                {#if t.priority}<span class="pri pri-{t.priority}">{t.priority}</span>{/if}
-                {#each t.tags ?? [] as tag}<span class="tag">{tag}</span>{/each}
-                {#if t.handoff_to}<span class="hbadge">{@render iconHandoff()}{t.handoff_to}</span>{/if}
-                {#if taskHasPending(t.id)}<span class="askbadge">asks</span>{/if}
-              </div>
-            {/if}
-            {#if latestRun(t.id) || isStarting(t.id)}
-              <div class="agent-status s-{isStarting(t.id) ? 'starting' : latestRun(t.id).status}">
-                <span class="agent-label">{runStatusLabel(t.id)}</span>
+            <div class="meta">
+              <span class="proj" class:is-global={!t.project}>{projectLabel(t.project)}</span>
+              {#if t.priority}<span class="pri pri-{t.priority}">{t.priority}</span>{/if}
+              {#each t.tags ?? [] as tag}<span class="tag">{tag}</span>{/each}
+              {#if t.handoff_to}<span class="hbadge">{@render iconHandoff()}{t.handoff_to}</span>{/if}
+              {#if taskHasPending(t.id)}
+                <button
+                  type="button"
+                  class="askbadge"
+                  onclick={(e) => { e.stopPropagation(); openDetail(t); }}
+                >asks</button>
+              {/if}
+            </div>
+            {#if latestRun(t.id) || isStarting(t.id) || taskHasPending(t.id)}
+              <div class="agent-status s-{waitStatusClass(t.id)}">
+                <span class="agent-label">{waitStatusLabel(t.id)}</span>
                 {#if latestRun(t.id)?.message}
                   <p class="agent-msg">{latestRun(t.id).message}</p>
-                {:else if isWorking(t.id)}
+                {:else if isWorking(t.id) && !pendingAskFor(t.id)}
                   <p class="agent-msg muted">Cursor is on it…</p>
                 {/if}
               </div>
@@ -492,7 +703,7 @@
               {/if}
             </div>
             {#if openMenu === t.id}
-              <div class="menu" role="menu" onclick={(e) => e.stopPropagation()}>
+              <div class="menu" role="menu" tabindex="-1">
                 {#each COLUMNS.filter((x) => x.key !== t.status) as m}
                   <button role="menuitem" onclick={() => { openMenu = null; move(t.id, m.key); }}>Move to {m.label}</button>
                 {/each}
@@ -505,13 +716,20 @@
           <div class="empty">Nothing here</div>
         {/if}
       </div>
-    </section>
+    </div>
   {/each}
 </main>
 
 <!-- Add task modal -->
 {#if showAdd}
-  <div class="scrim" onclick={() => (showAdd = false)}></div>
+  <div
+    class="scrim"
+    role="button"
+    tabindex="-1"
+    aria-label="Dismiss"
+    onclick={() => (showAdd = false)}
+    onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showAdd = false; } }}
+  ></div>
   <div class="modal" role="dialog" aria-modal="true" aria-label="New task">
     <div class="modal-head">
       <h3>New task</h3>
@@ -526,6 +744,18 @@
         placeholder="What needs doing?"
         onkeydown={(e) => { if (e.key === "Enter") createTask(); if (e.key === "Escape") showAdd = false; }}
       />
+    </label>
+    <label class="field">
+      <span>Project</span>
+      <select bind:value={addProject}>
+        <option value="">global</option>
+        {#each projectPaths.filter((p) => p.project !== "_") as pp (pp.project)}
+          <option value={pp.project}>{pp.project}</option>
+        {/each}
+      </select>
+      {#if projectPaths.length === 0}
+        <span class="field-hint">Add a project path (folder icon) to assign tasks to a project.</span>
+      {/if}
     </label>
     <div class="field">
       <span>Priority</span>
@@ -544,15 +774,22 @@
 
 <!-- Activity drawer -->
 {#if showActivity}
-  <div class="scrim" onclick={() => (showActivity = false)}></div>
-  <aside class="activity" role="dialog" aria-label="Activity feed">
+  <div
+    class="scrim"
+    role="button"
+    tabindex="-1"
+    aria-label="Dismiss activity"
+    onclick={() => (showActivity = false)}
+    onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showActivity = false; } }}
+  ></div>
+  <div class="activity" role="dialog" aria-label="Activity feed">
     <div class="activity-head">
       <div class="live">{@render iconActivity()}<span>Activity</span></div>
       <button class="icon-btn sm" aria-label="Close activity" onclick={() => (showActivity = false)}>{@render iconClose()}</button>
     </div>
     <div class="feed">
       {#if events.length === 0}<div class="empty">No activity yet</div>{/if}
-      {#each events as e (e.id)}
+      {#each events.filter(eventVisible) as e (e.id)}
         {@const et = eventTitle(e)}
         <div class="ev">
           <span class="ev-dot k-{e.kind}" aria-hidden="true"></span>
@@ -569,72 +806,41 @@
         </div>
       {/each}
     </div>
-  </aside>
+  </div>
 {/if}
 
 <!-- Task detail drawer -->
 {#if detail}
-  <div class="scrim" onclick={closeDetail}></div>
-  <aside class="detail" class:is-working={isWorking(detail.id)} role="dialog" aria-modal="true" aria-label="Task detail">
+  <div
+    class="scrim"
+    role="button"
+    tabindex="-1"
+    aria-label="Dismiss task detail"
+    onclick={closeDetail}
+    onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); closeDetail(); } }}
+  ></div>
+  <div class="detail" class:is-working={isWorking(detail.id)} role="dialog" aria-modal="true" aria-label="Task detail">
     <div class="activity-head">
-      <div class="live"><span class="d-id">#{detail.id}</span><span>{editing ? "Edit" : "Task"}</span></div>
+      <div class="live">
+        <span class="d-id">#{detail.id}</span>
+        <span>{editing ? "Edit" : "Task"}</span>
+        {#if isWorking(detail.id) || pendingAskFor(detail.id) || (latestRun(detail.id) && ["exited","failed","killed"].includes(latestRun(detail.id).status))}
+          <span class="d-working s-{waitStatusClass(detail.id)}">
+            {#if isWorking(detail.id) || pendingAskFor(detail.id)}<span class="agent-pulse" aria-hidden="true"></span>{/if}
+            {waitStatusLabel(detail.id)}
+          </span>
+        {/if}
+      </div>
       <div class="head-actions">
+        {#if !editing && isWorking(detail.id)}
+          <button class="btn-run cancel sm" onclick={() => cancelRun(detail.id)}>Cancel</button>
+        {/if}
         {#if !editing}
           <button class="icon-btn sm" aria-label="Edit task" onclick={startEdit}>{@render iconEdit()}</button>
         {/if}
         <button class="icon-btn sm" aria-label="Close" onclick={closeDetail}>{@render iconClose()}</button>
       </div>
     </div>
-    {#if !editing}
-      <div class="d-sticky">
-        <h3 class="d-title">{detail.title}</h3>
-        <div class="d-chips">
-          <span class="d-status s-{detail.status}">{statusLabel(detail.status)}</span>
-          {#if detail.priority}<span class="pri pri-{detail.priority}">{detail.priority}</span>{/if}
-          {#each detail.tags ?? [] as tag}<span class="tag">{tag}</span>{/each}
-        </div>
-        <div class="d-facts">
-          {#if detail.project}<span><em>Project</em> {detail.project}</span>{/if}
-          {#if detail.due_date}<span><em>Due</em> {detail.due_date}</span>{/if}
-          {#if detail.handoff_to}<span><em>Handoff</em> → {detail.handoff_to}</span>{/if}
-          <span><em>Updated</em> {fmtDateTime(detail.updated_at)}</span>
-        </div>
-        <div class="d-move">
-          {#each COLUMNS.filter((x) => x.key !== detail.status) as m}
-            <button class="btn-ghost sm" onclick={() => moveFromDetail(m.key)}>Move to {m.label}</button>
-          {/each}
-          {#if isWorking(detail.id)}
-            <button class="btn-run cancel sm" onclick={() => cancelRun(detail.id)}>Cancel agent</button>
-          {:else}
-            <button class="btn-run sm" onclick={() => runTask(detail.id)}>{@render iconPlay()}<span>Run</span></button>
-          {/if}
-        </div>
-        {#if latestRun(detail.id) || isStarting(detail.id)}
-          <div class="agent-status detail s-{isStarting(detail.id) ? 'starting' : latestRun(detail.id).status}">
-            <div class="agent-row">
-              <span class="agent-label">{runStatusLabel(detail.id)}</span>
-              {#if isWorking(detail.id)}<span class="agent-pulse" aria-hidden="true"></span>{/if}
-            </div>
-            {#if latestRun(detail.id)?.message}
-              <p class="agent-msg">{latestRun(detail.id).message}</p>
-            {:else if isWorking(detail.id)}
-              <p class="agent-msg muted">Waiting for the first progress note…</p>
-            {/if}
-          </div>
-        {/if}
-        {#if needPath && needPath.taskId === detail.id}
-          <div class="path-prompt">
-            <p>Where is project <strong>{needPath.project === "_" ? "(global)" : needPath.project}</strong> on disk?</p>
-            <input bind:value={pathInput} placeholder="/home/you/sites/…" onkeydown={(e) => { if (e.key === "Enter") savePathAndRun(); }} />
-            <div class="modal-foot">
-              <button class="btn-ghost" onclick={() => (needPath = null)}>Cancel</button>
-              <button class="btn-primary" disabled={!pathInput.trim()} onclick={savePathAndRun}>Save &amp; Run</button>
-            </div>
-          </div>
-        {/if}
-        {#if runError}<p class="run-err">{runError}</p>{/if}
-      </div>
-    {/if}
     <div class="detail-body">
       {#if editing}
         <label class="field">
@@ -642,7 +848,22 @@
           <input bind:value={edit.title} onkeydown={(e) => { if (e.key === "Escape") editing = false; }} />
         </label>
         <label class="field">
-          <span>Description</span>
+          <span>Project</span>
+          <select bind:value={edit.project}>
+            <option value="">global</option>
+            {#each projectPaths.filter((p) => p.project !== "_") as pp (pp.project)}
+              <option value={pp.project}>{pp.project}</option>
+            {/each}
+            {#if edit.project && !projectPaths.some((p) => p.project === edit.project)}
+              <option value={edit.project}>{edit.project} (unmapped)</option>
+            {/if}
+          </select>
+          {#if projectPaths.length === 0}
+            <span class="field-hint">Add a project path (folder icon) to assign tasks to a project.</span>
+          {/if}
+        </label>
+        <label class="field">
+          <span>Description (markdown)</span>
           <textarea rows="5" bind:value={edit.description}></textarea>
         </label>
         <div class="field">
@@ -666,24 +887,89 @@
           <button class="btn-primary" disabled={!edit.title.trim()} onclick={saveEdit}>{@render iconCheck()}<span>Save</span></button>
         </div>
       {:else}
+        <h3 class="d-title">{detail.title}</h3>
+        <div class="d-chips">
+          <span class="d-status s-{detail.status}">{statusLabel(detail.status)}</span>
+          <span class="proj" class:is-global={!detail.project}>{projectLabel(detail.project)}</span>
+          {#if detail.priority}<span class="pri pri-{detail.priority}">{detail.priority}</span>{/if}
+          {#each detail.tags ?? [] as tag}<span class="tag">{tag}</span>{/each}
+        </div>
+        <div class="d-facts">
+          <span><em>Project</em> {projectLabel(detail.project)}</span>
+          {#if detail.due_date}<span><em>Due</em> {detail.due_date}</span>{/if}
+          {#if detail.handoff_to}
+            <span class="d-handoff">
+              <em>Handoff</em> → {detail.handoff_to}
+              <button class="chip-x inline" onclick={(e) => clearHandoff(detail.id, e)} aria-label="Clear handoff" title="Clear handoff">{@render iconClose()}</button>
+            </span>
+          {/if}
+          <span><em>Updated</em> {fmtDateTime(detail.updated_at)}</span>
+        </div>
+        <div class="d-move">
+          {#each COLUMNS.filter((x) => x.key !== detail.status) as m}
+            <button class="btn-ghost sm" onclick={() => moveFromDetail(m.key)}>Move to {m.label}</button>
+          {/each}
+          {#if !isWorking(detail.id)}
+            <button class="btn-run sm" onclick={() => runTask(detail.id)}>{@render iconPlay()}<span>Run</span></button>
+          {/if}
+        </div>
+        {#if needPath && needPath.taskId === detail.id}
+          <div class="path-prompt">
+            <p>Where is project <strong>{needPath.project === "_" ? "(global)" : needPath.project}</strong> on disk?</p>
+            <input bind:value={pathInput} placeholder="/home/you/sites/…" onkeydown={(e) => { if (e.key === "Enter") savePathAndRun(); }} />
+            <div class="modal-foot">
+              <button class="btn-ghost" onclick={() => (needPath = null)}>Cancel</button>
+              <button class="btn-primary" disabled={!pathInput.trim()} onclick={savePathAndRun}>Save &amp; Run</button>
+            </div>
+          </div>
+        {/if}
+        {#if runError}<p class="run-err">{runError}</p>{/if}
         <div class="d-section">
           <h4>Description</h4>
           {#if detail.description}
-            <p class="d-desc">{detail.description}</p>
+            <div class="md d-desc">{@html renderMd(detail.description)}</div>
           {:else}
             <p class="d-desc is-muted">No description</p>
           {/if}
         </div>
         <div class="d-section">
-          <h4>Notes {(detail.notes ?? []).length ? `(${detail.notes.length})` : ""}</h4>
-          {#if (detail.notes ?? []).length === 0}<div class="empty sm">No notes yet</div>{/if}
-          {#each [...(detail.notes ?? [])].reverse() as n (n.id)}
-            <div class="d-note"><p>{n.body}</p><span class="ev-time">{fmtDateTime(n.created_at)}</span></div>
-          {/each}
+          <h4>Thread {(detail.notes ?? []).length ? `(${detail.notes.length})` : ""}</h4>
+          {#if pendingAskFor(detail.id)}
+            {@const ask = pendingAskFor(detail.id)}
+            <div class="ask-card" role="form" aria-label="Agent question">
+              <div class="ask-head">
+                <span class="ask-label">Agent asks</span>
+              </div>
+              <div class="md ask-q">{@html renderMd(ask.question)}</div>
+              <textarea
+                rows="3"
+                bind:value={answerDraft}
+                placeholder="Your answer…"
+                onkeydown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && answerDraft.trim()) submitAnswer(ask.id);
+                }}
+              ></textarea>
+              <div class="ask-actions">
+                <button class="btn-primary sm" disabled={!answerDraft.trim()} onclick={() => submitAnswer(ask.id)}>Submit answer</button>
+              </div>
+            </div>
+          {/if}
           <div class="d-note-add">
-            <input bind:value={noteBody} placeholder="Add a note…" onkeydown={(e) => { if (e.key === "Enter") addNote(); }} />
+            <input bind:value={noteBody} placeholder="Add to thread (markdown ok)…" onkeydown={(e) => { if (e.key === "Enter") addNote(); }} />
             <button class="btn-primary sm" disabled={!noteBody.trim()} onclick={addNote}>Add</button>
           </div>
+          {#if (detail.notes ?? []).length === 0 && !pendingAskFor(detail.id)}
+            <div class="empty sm">Nothing in the thread yet</div>
+          {/if}
+          {#each [...(detail.notes ?? [])].reverse() as n (n.id)}
+            <div class="d-note" class:is-new={!!animNoteIds[n.id]}>
+              <div class="note-meta">
+                <span class="note-author a-{n.author || 'unknown'}">{noteAuthorLabel(n.author)}</span>
+                <span class="ev-time">{fmtDateTime(n.created_at, { seconds: true })}</span>
+              </div>
+              <div class="md">{@html renderMd(n.body)}</div>
+            </div>
+          {/each}
         </div>
         <dl class="d-meta">
           <div><dt>Created</dt><dd>{fmtDateTime(detail.created_at)}</dd></div>
@@ -692,26 +978,7 @@
         </dl>
       {/if}
     </div>
-  </aside>
-{/if}
-
-{#if pendingQuestions.length > 0}
-  {@const ask = openAskFor(detail?.id)}
-  {#if ask}
-    <div class="ask-backdrop" role="dialog" aria-modal="true" aria-label="Agent question">
-      <div class="ask-modal">
-        <div class="ask-head">
-          <h3>Agent asks</h3>
-          <span class="ask-task">#{ask.task_id}</span>
-        </div>
-        <p class="ask-q">{ask.question}</p>
-        <textarea rows="3" bind:value={answerDraft} placeholder="Your answer…"></textarea>
-        <div class="modal-foot">
-          <button class="btn-primary" disabled={!answerDraft.trim()} onclick={() => submitAnswer(ask.id)}>Submit answer</button>
-        </div>
-      </div>
-    </div>
-  {/if}
+  </div>
 {/if}
 
 <style>
@@ -753,6 +1020,32 @@
   .brand h1 { font-size: 18px; font-weight: 700; margin: 0; letter-spacing: -.02em; }
   .actions { display: flex; align-items: center; gap: 8px; }
 
+  .notify-banner {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    margin: 8px 16px 0; padding: 10px 14px; border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border));
+    background: color-mix(in srgb, var(--amber) 10%, var(--surface));
+    font-size: 13px; color: var(--text);
+  }
+  .notify-actions { display: flex; gap: 8px; }
+  .proj-filter {
+    display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 16px 0;
+  }
+  .proj-filter button {
+    font-family: inherit; font-size: 12px; font-weight: 600; padding: 5px 10px;
+    border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--muted); cursor: pointer;
+  }
+  .proj-filter button.active {
+    color: var(--prog); border-color: color-mix(in srgb, var(--prog) 45%, var(--border));
+    background: color-mix(in srgb, var(--prog) 12%, var(--surface));
+  }
+  .field-hint { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .field select {
+    width: 100%; height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text); font-family: inherit; font-size: 16px;
+  }
+
   .projects-panel {
     margin: 0 16px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface); display: flex; flex-direction: column; gap: 8px;
@@ -763,9 +1056,31 @@
   .proj-path { flex: 1; min-width: 180px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }
   .askbadge {
     font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em;
-    padding: 2px 7px; border-radius: 999px;
+    padding: 2px 7px; border-radius: 999px; border: none; cursor: pointer;
     color: var(--amber); background: color-mix(in srgb, var(--amber) 18%, transparent);
+    font-family: inherit;
   }
+  .askbadge:hover { background: color-mix(in srgb, var(--amber) 28%, transparent); }
+  .ask-card {
+    margin-bottom: 12px; padding: 12px; border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border));
+    background: color-mix(in srgb, var(--amber) 10%, var(--surface-2));
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .ask-head { display: flex; align-items: center; gap: 8px; }
+  .ask-label {
+    font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--amber);
+  }
+  .ask-q { margin: 0; font-size: 14px; line-height: 1.45; color: var(--text); }
+  .ask-card textarea {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); resize: vertical; font-family: inherit; font-size: 16px;
+  }
+  .ask-card textarea:focus {
+    outline: none; border-color: var(--amber);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 25%, transparent);
+  }
+  .ask-actions { display: flex; justify-content: flex-end; }
   .card-actions { display: flex; gap: 8px; margin-top: 10px; }
   .btn-run {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -784,11 +1099,20 @@
     border: 1px solid var(--border); background: var(--surface-2);
     display: flex; flex-direction: column; gap: 4px;
   }
-  .agent-status.detail { margin: 0 0 16px; }
   .agent-status.s-starting, .agent-status.s-running {
     border-color: color-mix(in srgb, var(--prog) 45%, var(--border));
     background: color-mix(in srgb, var(--prog) 10%, var(--surface-2));
   }
+  .agent-status.s-waiting-you {
+    border-color: color-mix(in srgb, var(--amber) 45%, var(--border));
+    background: color-mix(in srgb, var(--amber) 12%, var(--surface-2));
+  }
+  .agent-status.s-waiting-ci {
+    border-color: color-mix(in srgb, var(--prog) 35%, var(--border));
+    background: color-mix(in srgb, var(--prog) 8%, var(--surface-2));
+  }
+  .agent-status.s-waiting-you .agent-label { color: var(--amber); }
+  .agent-status.s-waiting-ci .agent-label { color: var(--prog); }
   .agent-status.s-exited {
     border-color: color-mix(in srgb, var(--done) 45%, var(--border));
     background: color-mix(in srgb, var(--done) 10%, var(--surface-2));
@@ -818,23 +1142,6 @@
   }
   .path-prompt input { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
   .run-err { color: var(--danger); font-size: 13px; margin: 8px 0 0; }
-  .ask-backdrop {
-    position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.45);
-    display: grid; place-items: center; padding: 16px;
-  }
-  .ask-modal {
-    width: min(440px, 100%); background: var(--surface); border: 1px solid var(--border);
-    border-radius: 14px; padding: 16px; box-shadow: var(--shadow);
-    display: flex; flex-direction: column; gap: 10px;
-  }
-  .ask-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .ask-head h3 { margin: 0; font-size: 16px; }
-  .ask-task { font-size: 12px; color: var(--muted); }
-  .ask-q { margin: 0; white-space: pre-wrap; line-height: 1.45; }
-  .ask-modal textarea {
-    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
-    background: var(--surface-2); color: var(--text); resize: vertical; font-family: inherit;
-  }
   .btn-ghost.danger, .btn-ghost.sm.danger { color: var(--danger); }
 
   .icon-btn {
@@ -876,15 +1183,28 @@
   .lane-head svg { width: 15px; height: 15px; }
   .lane-scroll { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
   .handoff-chip {
-    flex: 0 0 auto; max-width: 260px; padding: 8px 12px; border-radius: 10px;
+    position: relative;
+    cursor: pointer;
+    flex: 0 0 auto; max-width: 280px; padding: 8px 32px 8px 12px; border-radius: 10px;
     background: color-mix(in srgb, var(--amber) 12%, var(--surface));
     border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border));
     display: flex; flex-direction: column; gap: 2px;
   }
   .handoff-chip .to { font-size: 11px; font-weight: 700; color: var(--amber); text-transform: uppercase; }
   .handoff-chip .ht { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .handoff-chip .hp { font-size: 11px; font-weight: 600; color: var(--prog); }
   .handoff-chip .hr { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .handoff-chip.human { box-shadow: 0 0 0 1px var(--amber); }
+  .chip-x {
+    position: absolute; top: 4px; right: 4px;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; padding: 0; border: none; border-radius: 6px;
+    background: transparent; color: var(--muted); cursor: pointer;
+  }
+  .chip-x:hover { background: var(--surface-2); color: var(--text); }
+  .chip-x svg { width: 14px; height: 14px; }
+  .chip-x.inline { position: static; width: 18px; height: 18px; vertical-align: middle; margin-left: 4px; }
+  .d-handoff { display: inline-flex; align-items: center; gap: 2px; }
 
   /* Segmented (mobile) */
   .segmented {
@@ -939,6 +1259,12 @@
   .pri-medium { color: var(--amber); background: color-mix(in srgb, var(--amber) 15%, transparent); }
   .pri-low { color: var(--muted); background: color-mix(in srgb, var(--muted) 18%, transparent); }
   .tag { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 999px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); }
+  .proj {
+    font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    color: var(--prog); background: color-mix(in srgb, var(--prog) 12%, transparent);
+    letter-spacing: .01em;
+  }
+  .proj.is-global { color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); font-weight: 600; }
   .hbadge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; color: var(--amber); background: color-mix(in srgb, var(--amber) 13%, transparent); }
   .hbadge svg { width: 12px; height: 12px; }
 
@@ -1022,53 +1348,104 @@
     color: var(--muted); letter-spacing: .02em;
   }
   .head-actions { display: flex; align-items: center; gap: 6px; }
-  .d-sticky {
-    flex: 0 0 auto; padding: 14px 18px 12px; border-bottom: 1px solid var(--border);
-    background: color-mix(in srgb, var(--surface) 92%, var(--prog) 8%);
-    display: flex; flex-direction: column; gap: 10px;
+  .d-working {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-left: 4px; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
   }
-  .detail:not(.is-working) .d-sticky { background: var(--surface); }
+  .d-working.s-starting, .d-working.s-running {
+    color: var(--prog); background: color-mix(in srgb, var(--prog) 16%, transparent);
+  }
+  .d-working.s-waiting-you {
+    color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, transparent);
+  }
+  .d-working.s-waiting-ci {
+    color: var(--prog); background: color-mix(in srgb, var(--prog) 12%, transparent);
+  }
+  .d-working.s-exited {
+    color: var(--done); background: color-mix(in srgb, var(--done) 15%, transparent);
+  }
+  .d-working.s-failed, .d-working.s-killed {
+    color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent);
+  }
   .detail-body { flex: 1; overflow-y: auto; padding: 16px 18px calc(24px + env(safe-area-inset-bottom)); }
-  .d-title { margin: 0; font-size: 18px; font-weight: 700; line-height: 1.3; letter-spacing: -.01em; word-break: break-word; }
-  .d-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .d-title { margin: 0 0 10px; font-size: 18px; font-weight: 700; line-height: 1.3; letter-spacing: -.01em; word-break: break-word; }
+  .d-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   .d-status { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
   .s-todo { color: var(--todo); background: color-mix(in srgb, var(--todo) 18%, transparent); }
   .s-in_progress { color: var(--prog); background: color-mix(in srgb, var(--prog) 15%, transparent); }
   .s-done { color: var(--done); background: color-mix(in srgb, var(--done) 15%, transparent); }
   .d-facts {
-    display: flex; flex-wrap: wrap; gap: 6px 14px; padding-top: 2px;
+    display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 12px;
     font-size: 12px; color: var(--text); border-top: 1px solid var(--border); padding-top: 10px;
   }
   .d-facts em { font-style: normal; font-weight: 600; color: var(--muted); margin-right: 4px; }
-  .d-desc { font-size: 14px; line-height: 1.55; color: var(--text); white-space: pre-wrap; word-break: break-word; margin: 0 0 8px; }
-  .d-desc.is-muted { color: var(--muted); font-style: italic; }
+  .d-desc { font-size: 14px; line-height: 1.55; color: var(--text); word-break: break-word; margin: 0 0 8px; }
+  .d-desc.is-muted { color: var(--muted); font-style: italic; white-space: pre-wrap; }
+  .md :global(p) { margin: 0 0 .65em; }
+  .md :global(p:last-child) { margin-bottom: 0; }
+  .md :global(ul), .md :global(ol) { margin: 0 0 .65em; padding-left: 1.25em; }
+  .md :global(li) { margin: .15em 0; }
+  .md :global(code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .9em; padding: .1em .35em; border-radius: 4px;
+    background: color-mix(in srgb, var(--surface-3) 80%, transparent);
+  }
+  .md :global(pre) {
+    margin: 0 0 .65em; padding: 10px 12px; border-radius: 8px; overflow-x: auto;
+    background: var(--surface-3); border: 1px solid var(--border);
+  }
+  .md :global(pre code) { padding: 0; background: transparent; font-size: 12px; }
+  .md :global(a) { color: var(--prog); }
+  .md :global(h1), .md :global(h2), .md :global(h3), .md :global(h4) {
+    margin: .8em 0 .35em; font-size: 1em; font-weight: 700; line-height: 1.3;
+  }
+  .md :global(blockquote) {
+    margin: 0 0 .65em; padding: 2px 0 2px 10px; border-left: 3px solid var(--border); color: var(--muted);
+  }
+  .md :global(hr) { border: none; border-top: 1px solid var(--border); margin: .8em 0; }
+  .md :global(strong) { font-weight: 700; }
   .d-meta { display: flex; flex-direction: column; gap: 8px; margin: 18px 0 0; padding: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; }
   .d-meta > div { display: flex; gap: 10px; font-size: 13px; }
   .d-meta dt { flex: 0 0 74px; color: var(--muted); font-weight: 600; margin: 0; }
   .d-meta dd { margin: 0; color: var(--text); word-break: break-word; }
-  .d-move { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+  .d-move { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
   .d-section { margin-bottom: 18px; }
   .d-section h4 { margin: 0 0 10px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
   .d-note { padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); margin-bottom: 8px; }
-  .d-note p { margin: 0 0 4px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-  .d-note-add { display: flex; gap: 8px; margin-top: 10px; }
+  .d-note.is-new {
+    border-color: color-mix(in srgb, var(--prog) 45%, var(--border));
+    background: color-mix(in srgb, var(--prog) 10%, var(--surface-2));
+    animation: note-in .38s ease;
+  }
+  .note-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .note-author {
+    font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em;
+    padding: 2px 7px; border-radius: 999px;
+  }
+  .note-author.a-human { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .note-author.a-agent { color: var(--prog); background: color-mix(in srgb, var(--prog) 14%, transparent); }
+  .note-author.a-unknown, .note-author.a-system { color: var(--muted); background: var(--surface-3); }
+  .d-note .md { font-size: 13px; line-height: 1.5; color: var(--text); word-break: break-word; }
+  .d-note-add { display: flex; gap: 8px; margin: 0 0 12px; }
   .d-note-add input {
     flex: 1; min-width: 0; height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border);
     background: var(--surface-2); color: var(--text); font-family: inherit; font-size: 16px;
   }
   .d-note-add input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
-  .agent-row { display: flex; align-items: center; gap: 8px; }
   .agent-pulse {
     width: 8px; height: 8px; border-radius: 50%; background: var(--prog);
     box-shadow: 0 0 0 0 color-mix(in srgb, var(--prog) 60%, transparent);
     animation: pulse 1.4s ease-out infinite;
   }
-  .agent-status.detail { margin: 0; max-height: 140px; overflow-y: auto; }
-  .agent-status.detail .agent-msg { -webkit-line-clamp: 5; }
   @keyframes pulse {
     0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--prog) 55%, transparent); }
     70% { box-shadow: 0 0 0 8px transparent; }
     100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  @keyframes note-in {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: none; }
   }
   .detail-body textarea {
     width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
@@ -1093,9 +1470,6 @@
     .col-head { padding: 4px 4px 12px; }
     .handoff-lane, .topbar { padding-left: 24px; padding-right: 24px; }
     .modal { animation: pop .16s ease; }
-  }
-  @media (min-width: 1200px) {
-    .topbar { padding-left: max(24px, calc((100vw - 1200px) / 2)); padding-right: max(24px, calc((100vw - 1200px) / 2)); }
   }
 
   @media (prefers-reduced-motion: reduce) {

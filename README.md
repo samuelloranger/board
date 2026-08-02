@@ -48,7 +48,9 @@ Restart your AI clients afterward so they pick up the new MCP server.
   - `handoff` parks a task for another agent or a human, with context.
   - From the web UI, **Run** spawns Cursor Agent CLI on a task (project path
     remembered in the UI). Mid-run, the agent can `ask_user` and you answer in
-    the board UI.
+    the board Thread; optional browser notifications when you’re on another tab.
+  - Filter the board by mapped project; assign projects from a `<select>` of
+    paths. Agents can `set_run_wait` while blocked on CI.
   - A live activity board shows what every agent is doing across every project.
 
 ## CLI
@@ -67,7 +69,7 @@ board serve                   # open the web UI at http://127.0.0.1:7420
 
 `create_task`, `list_tasks`, `get_task`, `update_task`, `move_task`,
 `archive_task`, `unarchive_task`, `delete_task`, `add_note`, `get_board`,
-`handoff`, `resume`, `ask_user`.
+`handoff`, `resume`, `ask_user`, `set_run_wait`.
 
 Responses are sized for agents, whose context is the scarce resource. Write
 tools confirm with ids only; `get_board` and `list_tasks` return compact tasks

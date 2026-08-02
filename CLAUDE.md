@@ -62,7 +62,7 @@ There is no `vite dev` script and no frontend test runner — `bun run build` th
 ## MCP tool surface
 
 `create_task`, `list_tasks`, `get_task`, `update_task`, `move_task`, `archive_task`, `unarchive_task`,
-`delete_task`, `add_note`, `get_board`, `handoff`, `resume`, `ask_user`.
+`delete_task`, `add_note`, `get_board`, `handoff`, `resume`, `ask_user`, `set_run_wait`.
 
 **Token-small responses are a core project value, not an optimization.** The caller is an agent whose
 context is the scarce resource, so `internal/mcpserver/server.go` deliberately withholds data:
@@ -76,7 +76,10 @@ context is the scarce resource, so `internal/mcpserver/server.go` deliberately w
 - Escape hatches: `verbose: true` for full tasks, `limit` to raise the list cap, `get_task` for one
   task in full.
 - `ask_user` returns only `{answer}` after the human replies in the web UI (SQLite bridge with
-  `board serve`).
+  `board serve`; browser can notify when the tab isn’t on that task).
+- `set_run_wait` marks the active run `wait=ci` (or clears it) so the UI shows **Waiting on CI**.
+- Notes carry `author` (`human` from the web UI, `agent` from MCP). Project create/edit is a
+  `<select>` over `project_paths`; topbar chips filter the board.
 
 When adding a tool, keep the default response minimal and put the full payload behind `verbose`.
 
