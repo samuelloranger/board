@@ -125,6 +125,16 @@ func TestUpdateTask(t *testing.T) {
 	if got2.Priority != nil {
 		t.Fatalf("priority should be cleared, got %v", got2.Priority)
 	}
+
+	proj := "board"
+	got3, err := st.UpdateTask(tk.ID, UpdateTaskParams{Project: &proj})
+	if err != nil || got3.Project == nil || *got3.Project != "board" {
+		t.Fatalf("set project: %v %+v", err, got3)
+	}
+	got4, _ := st.UpdateTask(tk.ID, UpdateTaskParams{Project: &empty})
+	if got4.Project != nil {
+		t.Fatalf("project should be cleared, got %v", got4.Project)
+	}
 }
 
 func TestUpdateTaskNotFound(t *testing.T) {

@@ -37,3 +37,25 @@ func TestHandoffAndResume(t *testing.T) {
 		t.Fatalf("want ErrNotFound got %v", err)
 	}
 }
+
+func TestClearHandoff(t *testing.T) {
+	st := newTestStore(t)
+	tk, _ := st.CreateTask(CreateTaskParams{Title: "parked"})
+	if _, err := st.Handoff(tk.ID, "cursor", "parked for later"); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := st.ClearHandoff(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.HandoffTo != nil || cleared.HandoffReason != nil {
+		t.Fatalf("expected cleared, got %+v", cleared)
+	}
+	again, err := st.ClearHandoff(tk.ID)
+	if err != nil || again.HandoffTo != nil {
+		t.Fatalf("idempotent clear: %v %+v", err, again)
+	}
+	if _, err := st.ClearHandoff(9999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound got %v", err)
+	}
+}

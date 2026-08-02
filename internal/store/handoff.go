@@ -19,6 +19,25 @@ func (s *Store) Handoff(id int64, to, reason string) (*Task, error) {
 	return s.GetTask(id)
 }
 
+// ClearHandoff removes handoff_to / handoff_reason without changing status.
+func (s *Store) ClearHandoff(id int64) (*Task, error) {
+	tk, err := s.GetTask(id)
+	if err != nil {
+		return nil, err
+	}
+	if tk.HandoffTo == nil {
+		return tk, nil
+	}
+	_, err = s.db.Exec(
+		`UPDATE tasks SET handoff_to = NULL, handoff_reason = NULL, updated_at = ? WHERE id = ?`,
+		now(), id)
+	if err != nil {
+		return nil, err
+	}
+	s.emit(&id, "handoff", "cleared")
+	return s.GetTask(id)
+}
+
 type ResumeResult struct {
 	Project    *string `json:"project"`
 	InProgress []*Task `json:"in_progress"`
