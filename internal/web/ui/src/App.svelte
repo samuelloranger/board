@@ -27,6 +27,14 @@
   let editing = $state(false);
   let edit = $state({ title: "", description: "", priority: "", due_date: "", tags: "" });
   let noteBody = $state("");
+  let pendingQuestions = $state([]);
+  let activeRuns = $state([]);
+  let projectPaths = $state([]);
+  let showProjects = $state(false);
+  let needPath = $state(null); // { project, taskId }
+  let pathInput = $state("");
+  let runError = $state("");
+  let answerDraft = $state("");
 
   function applyTheme(t) {
     theme = t;
@@ -39,6 +47,87 @@
     board = await (await fetch("/api/board?project=*")).json();
     const res = await (await fetch("/api/resume?project=*")).json();
     handoffs = res.handoffs ?? [];
+    await loadAgentState();
+  }
+  async function loadAgentState() {
+    pendingQuestions = await (await fetch("/api/questions?status=pending")).json();
+    activeRuns = await (await fetch("/api/runs?status=running")).json();
+    projectPaths = await (await fetch("/api/projects/paths")).json();
+  }
+  function taskHasPending(id) {
+    return pendingQuestions.some((q) => q.task_id === id);
+  }
+  function activeRunFor(id) {
+    return activeRuns.find((r) => r.task_id === id) ?? null;
+  }
+  function openAskFor(id) {
+    return pendingQuestions.find((q) => q.task_id === id) ?? pendingQuestions[0] ?? null;
+  }
+  async function runTask(id) {
+    runError = "";
+    needPath = null;
+    const resp = await fetch(`/api/tasks/${id}/run`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent: "cursor" }),
+    });
+    if (resp.status === 409) {
+      const body = await resp.json();
+      if (body.need_path) {
+        needPath = { project: body.project, taskId: id };
+        pathInput = "";
+        return;
+      }
+    }
+    if (!resp.ok) {
+      runError = await resp.text();
+      return;
+    }
+    await load();
+    if (detail) detail = findTask(detail.id);
+  }
+  async function savePathAndRun() {
+    if (!needPath || !pathInput.trim()) return;
+    const put = await fetch(`/api/projects/${encodeURIComponent(needPath.project)}/path`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: pathInput.trim() }),
+    });
+    if (!put.ok) {
+      runError = await put.text();
+      return;
+    }
+    const tid = needPath.taskId;
+    needPath = null;
+    await runTask(tid);
+  }
+  async function cancelRun(id) {
+    await fetch(`/api/tasks/${id}/run/cancel`, { method: "POST" });
+    await load();
+    if (detail) detail = findTask(detail.id);
+  }
+  async function submitAnswer(qid) {
+    const answer = answerDraft.trim();
+    if (!answer) return;
+    await fetch(`/api/questions/${qid}/answer`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answer }),
+    });
+    answerDraft = "";
+    await loadAgentState();
+  }
+  async function saveProjectPath(project, path) {
+    const put = await fetch(`/api/projects/${encodeURIComponent(project)}/path`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    if (!put.ok) {
+      runError = await put.text();
+      return;
+    }
+    await loadAgentState();
+  }
+  async function clearProjectPath(project) {
+    await fetch(`/api/projects/${encodeURIComponent(project)}/path`, { method: "DELETE" });
+    await loadAgentState();
   }
   async function move(id, status) {
     openMenu = null;
@@ -72,8 +161,8 @@
     return null;
   }
   function statusLabel(s) { return (COLUMNS.find((c) => c.key === s) || {}).label ?? s; }
-  function openDetail(t) { detail = t; editing = false; noteBody = ""; }
-  function closeDetail() { detail = null; editing = false; }
+  function openDetail(t) { detail = t; editing = false; noteBody = ""; runError = ""; needPath = null; }
+  function closeDetail() { detail = null; editing = false; needPath = null; runError = ""; }
   function startEdit() {
     edit = {
       title: detail.title ?? "",
@@ -146,11 +235,12 @@
     const t = findTask(e.task_id);
     return t ? t.title : "";
   }
-  const eventKindLabel = { created: "created", moved: "moved", note: "note", handoff: "handoff", archived: "archived", unarchived: "restored", updated: "updated", deleted: "deleted", tool: "tool", session: "session" };
+  const eventKindLabel = { created: "created", moved: "moved", note: "note", handoff: "handoff", archived: "archived", unarchived: "restored", updated: "updated", deleted: "deleted", tool: "tool", session: "session", run: "run", run_done: "run done", question: "question", answered: "answered" };
   const eventKindVerb = {
     created: "Created", moved: "Moved", note: "Note on", handoff: "Handed off",
     archived: "Archived", unarchived: "Restored", updated: "Updated", deleted: "Deleted",
-    tool: "Tool", session: "Session",
+    tool: "Tool", session: "Session", run: "Started agent on", run_done: "Agent finished",
+    question: "Asked on", answered: "Answered on",
   };
 
   $effect(() => {
@@ -204,6 +294,8 @@
 {#snippet iconClose()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>{/snippet}
 {#snippet iconCheck()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>{/snippet}
 {#snippet iconEdit()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>{/snippet}
+{#snippet iconFolder()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>{/snippet}
+{#snippet iconPlay()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg>{/snippet}
 
 <header class="topbar">
   <div class="brand">
@@ -211,6 +303,9 @@
     <h1>board</h1>
   </div>
   <div class="actions">
+    <button class="icon-btn" onclick={() => (showProjects = !showProjects)} aria-label="Project paths" title="Project paths">
+      {@render iconFolder()}
+    </button>
     <button class="icon-btn" onclick={toggleActivity} aria-label="Toggle activity">
       {@render iconActivity()}
       {#if unseen > 0}<span class="badge">{unseen}</span>{/if}
@@ -223,6 +318,24 @@
     </button>
   </div>
 </header>
+
+{#if showProjects}
+  <section class="projects-panel" aria-label="Project paths">
+    <div class="lane-head"><span>Project paths</span>
+      <button class="icon-btn sm" onclick={() => (showProjects = false)} aria-label="Close">{@render iconClose()}</button>
+    </div>
+    {#if projectPaths.length === 0}
+      <div class="empty sm">No paths yet — set one when you Run a task.</div>
+    {/if}
+    {#each projectPaths as pp (pp.project)}
+      <div class="proj-row">
+        <code class="proj-name">{pp.project === "_" ? "(global)" : pp.project}</code>
+        <input class="proj-path" value={pp.path} onchange={(e) => saveProjectPath(pp.project, e.currentTarget.value)} />
+        <button class="btn-ghost sm danger" onclick={() => clearProjectPath(pp.project)}>Clear</button>
+      </div>
+    {/each}
+  </section>
+{/if}
 
 {#if handoffs.length}
   <section class="handoff-lane" aria-label="Handoffs and inbox">
@@ -276,11 +389,13 @@
                 {@render iconMore()}
               </button>
             </div>
-            {#if t.priority || (t.tags && t.tags.length) || t.handoff_to}
+            {#if t.priority || (t.tags && t.tags.length) || t.handoff_to || taskHasPending(t.id) || activeRunFor(t.id)}
               <div class="meta">
                 {#if t.priority}<span class="pri pri-{t.priority}">{t.priority}</span>{/if}
                 {#each t.tags ?? [] as tag}<span class="tag">{tag}</span>{/each}
                 {#if t.handoff_to}<span class="hbadge">{@render iconHandoff()}{t.handoff_to}</span>{/if}
+                {#if activeRunFor(t.id)}<span class="runbadge">running</span>{/if}
+                {#if taskHasPending(t.id)}<span class="askbadge">asks</span>{/if}
               </div>
             {/if}
             {#if openMenu === t.id}
@@ -288,6 +403,11 @@
                 {#each COLUMNS.filter((x) => x.key !== t.status) as m}
                   <button role="menuitem" onclick={() => move(t.id, m.key)}>Move to {m.label}</button>
                 {/each}
+                {#if activeRunFor(t.id)}
+                  <button role="menuitem" onclick={() => cancelRun(t.id)}>Cancel agent</button>
+                {:else}
+                  <button role="menuitem" onclick={() => { openMenu = null; openDetail(t); runTask(t.id); }}>Run with Cursor</button>
+                {/if}
                 <button role="menuitem" class="danger" onclick={() => archive(t.id)}>Archive</button>
               </div>
             {/if}
@@ -430,7 +550,24 @@
           {#each COLUMNS.filter((x) => x.key !== detail.status) as m}
             <button class="btn-ghost sm" onclick={() => moveFromDetail(m.key)}>Move to {m.label}</button>
           {/each}
+          {#if activeRunFor(detail.id)}
+            <span class="runbadge">Cursor running</span>
+            <button class="btn-ghost sm danger" onclick={() => cancelRun(detail.id)}>Cancel</button>
+          {:else}
+            <button class="btn-primary sm" onclick={() => runTask(detail.id)}>{@render iconPlay()}<span>Run</span></button>
+          {/if}
         </div>
+        {#if needPath && needPath.taskId === detail.id}
+          <div class="path-prompt">
+            <p>Where is project <strong>{needPath.project === "_" ? "(global)" : needPath.project}</strong> on disk?</p>
+            <input bind:value={pathInput} placeholder="/home/you/sites/…" onkeydown={(e) => { if (e.key === "Enter") savePathAndRun(); }} />
+            <div class="modal-foot">
+              <button class="btn-ghost" onclick={() => (needPath = null)}>Cancel</button>
+              <button class="btn-primary" disabled={!pathInput.trim()} onclick={savePathAndRun}>Save &amp; Run</button>
+            </div>
+          </div>
+        {/if}
+        {#if runError}<p class="run-err">{runError}</p>{/if}
         <div class="d-section">
           <h4>Notes</h4>
           {#if (detail.notes ?? []).length === 0}<div class="empty sm">No notes yet</div>{/if}
@@ -445,6 +582,25 @@
       {/if}
     </div>
   </aside>
+{/if}
+
+{#if pendingQuestions.length > 0}
+  {@const ask = openAskFor(detail?.id)}
+  {#if ask}
+    <div class="ask-backdrop" role="dialog" aria-modal="true" aria-label="Agent question">
+      <div class="ask-modal">
+        <div class="ask-head">
+          <h3>Agent asks</h3>
+          <span class="ask-task">#{ask.task_id}</span>
+        </div>
+        <p class="ask-q">{ask.question}</p>
+        <textarea rows="3" bind:value={answerDraft} placeholder="Your answer…"></textarea>
+        <div class="modal-foot">
+          <button class="btn-primary" disabled={!answerDraft.trim()} onclick={() => submitAnswer(ask.id)}>Submit answer</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -485,6 +641,45 @@
   .logo { width: 22px; height: 22px; border-radius: 7px; background: linear-gradient(135deg, var(--accent), var(--prog)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
   .brand h1 { font-size: 18px; font-weight: 700; margin: 0; letter-spacing: -.02em; }
   .actions { display: flex; align-items: center; gap: 8px; }
+
+  .projects-panel {
+    margin: 0 16px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); display: flex; flex-direction: column; gap: 8px;
+  }
+  .projects-panel .lane-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .proj-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .proj-name { font-size: 12px; color: var(--amber); min-width: 72px; }
+  .proj-path { flex: 1; min-width: 180px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }
+  .runbadge, .askbadge {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em;
+    padding: 2px 7px; border-radius: 999px;
+  }
+  .runbadge { color: var(--prog); background: color-mix(in srgb, var(--prog) 18%, transparent); }
+  .askbadge { color: var(--amber); background: color-mix(in srgb, var(--amber) 18%, transparent); }
+  .path-prompt {
+    margin-top: 12px; padding: 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface-2); display: flex; flex-direction: column; gap: 8px;
+  }
+  .path-prompt input { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  .run-err { color: var(--danger); font-size: 13px; margin: 8px 0 0; }
+  .ask-backdrop {
+    position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.45);
+    display: grid; place-items: center; padding: 16px;
+  }
+  .ask-modal {
+    width: min(440px, 100%); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .ask-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .ask-head h3 { margin: 0; font-size: 16px; }
+  .ask-task { font-size: 12px; color: var(--muted); }
+  .ask-q { margin: 0; white-space: pre-wrap; line-height: 1.45; }
+  .ask-modal textarea {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text); resize: vertical; font-family: inherit;
+  }
+  .btn-ghost.danger, .btn-ghost.sm.danger { color: var(--danger); }
 
   .icon-btn {
     position: relative; display: inline-grid; place-items: center;
