@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samuelloranger/board/internal/store"
@@ -202,5 +203,49 @@ func TestHandoffAndResumeTools(t *testing.T) {
 	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "resume",
 		Arguments: map[string]any{}}); err != nil {
 		t.Fatalf("resume tool: %v", err)
+	}
+}
+
+func TestAskUserHelper(t *testing.T) {
+	st := newStore(t)
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t"})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		qs, _ := st.ListQuestions(&tk.ID, "pending")
+		if len(qs) == 1 {
+			st.AnswerQuestion(qs[0].ID, "ok")
+		}
+	}()
+	out, err := askUser(ctx, st, tk.ID, "go?")
+	if err != nil || out["answer"] != "ok" {
+		t.Fatalf("%v %#v", err, out)
+	}
+}
+
+func TestAskUserTool(t *testing.T) {
+	st := newStore(t)
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t"})
+	cs := connect(t, st, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		qs, _ := st.ListQuestions(&tk.ID, "pending")
+		if len(qs) == 1 {
+			st.AnswerQuestion(qs[0].ID, "blue")
+		}
+	}()
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "ask_user",
+		Arguments: map[string]any{"task_id": tk.ID, "question": "color?"},
+	})
+	if err != nil {
+		t.Fatalf("ask_user: %v", err)
+	}
+	m := structOut(t, res)
+	if m["answer"] != "blue" {
+		t.Fatalf("got %#v", m)
 	}
 }

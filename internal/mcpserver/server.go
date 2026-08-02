@@ -2,8 +2,10 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samuelloranger/board/internal/store"
@@ -303,5 +305,38 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 		return nil, r, nil
 	})
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "ask_user",
+		Description: "Ask the human a question via the board web UI and block until they answer. " +
+			"Use when this session was launched from the board UI (or you need human input mid-task). " +
+			"Pass the board task_id. Do not use terminal prompts.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
+		TaskID   int64  `json:"task_id"`
+		Question string `json:"question"`
+	}) (*mcp.CallToolResult, any, error) {
+		out, err := askUser(ctx, st, a.TaskID, a.Question)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, out, nil
+	})
+
 	return s
+}
+
+func askUser(ctx context.Context, st *store.Store, taskID int64, question string) (map[string]any, error) {
+	if taskID == 0 || question == "" {
+		return nil, fmt.Errorf("task_id and question are required")
+	}
+	q, err := st.CreateQuestion(taskID, question)
+	if err != nil {
+		return nil, err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	ans, err := st.WaitForAnswer(waitCtx, q.ID, 200*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"answer": ans}, nil
 }
