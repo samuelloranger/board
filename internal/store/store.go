@@ -38,6 +38,7 @@ type Note struct {
 	ID        int64  `json:"id"`
 	TaskID    int64  `json:"task_id"`
 	Body      string `json:"body"`
+	Author    string `json:"author,omitempty"` // "" | human | agent | system
 	CreatedAt string `json:"created_at"`
 }
 
@@ -124,6 +125,7 @@ func Open(path string) (*Store, error) {
 	}
 	// Additive column for agent summary text (existing DBs already created runs).
 	_, _ = db.Exec(`ALTER TABLE runs ADD COLUMN message TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE notes ADD COLUMN author TEXT NOT NULL DEFAULT ''`)
 	return &Store{db: db}, nil
 }
 

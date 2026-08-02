@@ -130,6 +130,7 @@ func HandlerConfig(cfg Config) http.Handler {
 				Description *string   `json:"description"`
 				Priority    *string   `json:"priority"`
 				DueDate     *string   `json:"due_date"`
+				Project     *string   `json:"project"`
 				Tags        *[]string `json:"tags"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -138,7 +139,8 @@ func HandlerConfig(cfg Config) http.Handler {
 			}
 			tk, err := st.UpdateTask(id, store.UpdateTaskParams{
 				Title: body.Title, Description: body.Description,
-				Priority: body.Priority, DueDate: body.DueDate, Tags: body.Tags,
+				Priority: body.Priority, DueDate: body.DueDate,
+				Project: body.Project, Tags: body.Tags,
 			})
 			writeJSON(w, tk, err)
 		case "note":
@@ -149,7 +151,7 @@ func HandlerConfig(cfg Config) http.Handler {
 				http.Error(w, "invalid JSON body", http.StatusBadRequest)
 				return
 			}
-			n, err := st.AddNote(id, body.Body)
+			n, err := st.AddNote(id, body.Body, "human")
 			writeJSON(w, n, err)
 		case "handoff":
 			var body struct {
@@ -160,6 +162,9 @@ func HandlerConfig(cfg Config) http.Handler {
 				return
 			}
 			tk, err := st.Handoff(id, body.To, body.Reason)
+			writeJSON(w, tk, err)
+		case "clear_handoff":
+			tk, err := st.ClearHandoff(id)
 			writeJSON(w, tk, err)
 		case "run":
 			handleRun(w, r, st, runner, id, &mu, procs)

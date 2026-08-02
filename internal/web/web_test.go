@@ -29,7 +29,7 @@ func newStore(t *testing.T) *store.Store {
 func TestGetTaskAPI(t *testing.T) {
 	st := newStore(t)
 	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "full", Description: "desc"})
-	st.AddNote(tk.ID, "n1")
+	st.AddNote(tk.ID, "n1", "agent")
 	srv := httptest.NewServer(Handler(st))
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/api/tasks/" + strconv.FormatInt(tk.ID, 10))

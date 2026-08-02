@@ -118,7 +118,7 @@ func (s *Store) taskTags(id int64) ([]string, error) {
 
 func (s *Store) taskNotes(id int64) ([]Note, error) {
 	rows, err := s.db.Query(
-		`SELECT id, task_id, body, created_at FROM notes WHERE task_id = ? ORDER BY id`, id)
+		`SELECT id, task_id, body, author, created_at FROM notes WHERE task_id = ? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +126,7 @@ func (s *Store) taskNotes(id int64) ([]Note, error) {
 	notes := []Note{}
 	for rows.Next() {
 		var n Note
-		if err := rows.Scan(&n.ID, &n.TaskID, &n.Body, &n.CreatedAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.TaskID, &n.Body, &n.Author, &n.CreatedAt); err != nil {
 			return nil, err
 		}
 		notes = append(notes, n)
@@ -201,6 +201,7 @@ type UpdateTaskParams struct {
 	Description *string
 	Priority    *string // "" clears to NULL
 	DueDate     *string // "" clears to NULL
+	Project     *string // "" clears to NULL
 	Tags        *[]string
 }
 
@@ -241,6 +242,14 @@ func (s *Store) UpdateTask(id int64, p UpdateTaskParams) (*Task, error) {
 		} else {
 			set = append(set, "due_date = ?")
 			args = append(args, *p.DueDate)
+		}
+	}
+	if p.Project != nil {
+		if *p.Project == "" {
+			set = append(set, "project = NULL")
+		} else {
+			set = append(set, "project = ?")
+			args = append(args, *p.Project)
 		}
 	}
 	args = append(args, id)

@@ -160,16 +160,17 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "update_task",
-		Description: "Patch a task. Only provided fields change. tags (if provided) replaces the whole tag set. Set priority or due_date to '' to clear them.",
+		Description: "Patch a task. Only provided fields change. tags (if provided) replaces the whole tag set. Set priority, due_date, or project to '' to clear them.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
 		ID          int64    `json:"id"`
 		Title       *string  `json:"title,omitempty"`
 		Description *string  `json:"description,omitempty"`
 		Priority    *string  `json:"priority,omitempty"`
 		DueDate     *string  `json:"due_date,omitempty"`
+		Project     *string  `json:"project,omitempty"`
 		Tags        []string `json:"tags,omitempty"`
 	}) (*mcp.CallToolResult, any, error) {
-		p := store.UpdateTaskParams{Title: a.Title, Description: a.Description, Priority: a.Priority, DueDate: a.DueDate}
+		p := store.UpdateTaskParams{Title: a.Title, Description: a.Description, Priority: a.Priority, DueDate: a.DueDate, Project: a.Project}
 		if a.Tags != nil {
 			p.Tags = &a.Tags
 		}
@@ -231,7 +232,7 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 		ID   int64  `json:"id"`
 		Body string `json:"body"`
 	}) (*mcp.CallToolResult, any, error) {
-		n, err := st.AddNote(a.ID, a.Body)
+		n, err := st.AddNote(a.ID, a.Body, "agent")
 		if err != nil {
 			return nil, nil, err
 		}

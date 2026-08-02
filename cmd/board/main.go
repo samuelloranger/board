@@ -202,7 +202,7 @@ func cmdNote(args []string, stdout io.Writer) error {
 		return err
 	}
 	defer st.Close()
-	if _, err := st.AddNote(id, strings.Join(args[1:], " ")); err != nil {
+	if _, err := st.AddNote(id, strings.Join(args[1:], " "), "human"); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "note added to #%d\n", id)
