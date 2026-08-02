@@ -1,13 +1,25 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
+	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 	"unicode/utf8"
 )
+
+// StartOpts configures an agent launch.
+type StartOpts struct {
+	Cwd    string
+	Prompt string
+	// OnProgress is called with the trimmed output so far (throttled). Optional.
+	OnProgress func(output string)
+}
 
 // StartResult is a running agent process handle.
 type StartResult struct {
@@ -19,7 +31,7 @@ type StartResult struct {
 
 // Runner launches an agent CLI in a project directory.
 type Runner interface {
-	Start(cwd, prompt string) (*StartResult, error)
+	Start(opts StartOpts) (*StartResult, error)
 }
 
 // CursorRunner spawns `cursor-agent -p --force`.
@@ -41,17 +53,57 @@ func trimOutput(s string) string {
 	return "…" + string(runes[len(runes)-maxOutputRunes:])
 }
 
-func (CursorRunner) Start(cwd, prompt string) (*StartResult, error) {
+func (CursorRunner) Start(opts StartOpts) (*StartResult, error) {
 	bin, err := lookPath("cursor-agent")
 	if err != nil {
 		return nil, errors.New("cursor-agent not found on PATH — install Cursor Agent CLI")
 	}
-	cmd := exec.Command(bin, "-p", "--force", "--output-format", "text", prompt)
-	cmd.Dir = cwd
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	cmd := exec.Command(bin, "-p", "--force", "--output-format", "text", opts.Prompt)
+	cmd.Dir = opts.Cwd
+
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	var (
+		mu  sync.Mutex
+		buf bytes.Buffer
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc := bufio.NewScanner(pr)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		var lastFlush time.Time
+		flush := func(force bool) {
+			if opts.OnProgress == nil {
+				return
+			}
+			now := time.Now()
+			if !force && now.Sub(lastFlush) < 1500*time.Millisecond {
+				return
+			}
+			lastFlush = now
+			mu.Lock()
+			out := trimOutput(buf.String())
+			mu.Unlock()
+			if out != "" {
+				opts.OnProgress(out)
+			}
+		}
+		for sc.Scan() {
+			line := sc.Text()
+			mu.Lock()
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+			mu.Unlock()
+			flush(false)
+		}
+		flush(true)
+	}()
+
 	if err := cmd.Start(); err != nil {
+		_ = pw.Close()
 		return nil, err
 	}
 	pid := cmd.Process.Pid
@@ -59,7 +111,11 @@ func (CursorRunner) Start(cwd, prompt string) (*StartResult, error) {
 		PID: pid,
 		Wait: func() (int, string, error) {
 			err := cmd.Wait()
+			_ = pw.Close()
+			<-done
+			mu.Lock()
 			out := trimOutput(buf.String())
+			mu.Unlock()
 			if err == nil {
 				return 0, out, nil
 			}
@@ -90,13 +146,16 @@ type FakeRunner struct {
 	KillErr             error
 }
 
-func (f *FakeRunner) Start(cwd, prompt string) (*StartResult, error) {
-	f.LastCwd, f.LastPrompt = cwd, prompt
+func (f *FakeRunner) Start(opts StartOpts) (*StartResult, error) {
+	f.LastCwd, f.LastPrompt = opts.Cwd, opts.Prompt
 	if f.StartErr != nil {
 		return nil, f.StartErr
 	}
 	out := f.Output
 	code := f.ExitCode
+	if opts.OnProgress != nil && out != "" {
+		opts.OnProgress(out)
+	}
 	return &StartResult{
 		PID: 4242,
 		Wait: func() (int, string, error) {

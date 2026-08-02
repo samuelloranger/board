@@ -272,12 +272,12 @@
     const t = findTask(e.task_id);
     return t ? t.title : "";
   }
-  const eventKindLabel = { created: "created", moved: "moved", note: "note", handoff: "handoff", archived: "archived", unarchived: "restored", updated: "updated", deleted: "deleted", tool: "tool", session: "session", run: "run", run_done: "run done", question: "question", answered: "answered" };
+  const eventKindLabel = { created: "created", moved: "moved", note: "note", handoff: "handoff", archived: "archived", unarchived: "restored", updated: "updated", deleted: "deleted", tool: "tool", session: "session", run: "run", run_done: "run done", run_progress: "progress", question: "question", answered: "answered" };
   const eventKindVerb = {
     created: "Created", moved: "Moved", note: "Note on", handoff: "Handed off",
     archived: "Archived", unarchived: "Restored", updated: "Updated", deleted: "Deleted",
     tool: "Tool", session: "Session", run: "Started agent on", run_done: "Agent finished",
-    question: "Asked on", answered: "Answered on",
+    run_progress: "Progress on", question: "Asked on", answered: "Answered on",
   };
 
   $effect(() => {

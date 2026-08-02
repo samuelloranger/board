@@ -19,5 +19,9 @@ func (s *Store) AddNote(taskID int64, body string) (*Note, error) {
 		return nil, err
 	}
 	s.emit(&taskID, "note", body)
+	// Mirror onto the active agent run so the web UI can show live progress.
+	if run, err := s.ActiveRunForTask(taskID); err == nil {
+		_ = s.ReportRunProgress(run.ID, taskID, body)
+	}
 	return &Note{ID: id, TaskID: taskID, Body: body, CreatedAt: ts}, nil
 }

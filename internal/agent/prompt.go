@@ -13,6 +13,10 @@ func BuildPrompt(tk *store.Task) string {
 	fmt.Fprintf(&b, "You were launched from the board web UI to work on task #%d.\n", tk.ID)
 	b.WriteString("Use the board MCP tools to update this task as you work.\n")
 	b.WriteString("If you need human input, call ask_user with this task_id — do not use terminal prompts.\n\n")
+	b.WriteString("LIVE PROGRESS (required):\n")
+	b.WriteString("- Call add_note on this task at the start, after each meaningful step, and whenever you edit or create files (include the paths).\n")
+	b.WriteString("- Keep notes short (1–3 sentences). The human watches them live on the board card.\n")
+	b.WriteString("- Do not go silent for long stretches of tool use without a note.\n\n")
 	fmt.Fprintf(&b, "Task #%d [%s]: %s\n", tk.ID, tk.Status, tk.Title)
 	if tk.Description != "" {
 		fmt.Fprintf(&b, "\nDescription:\n%s\n", tk.Description)

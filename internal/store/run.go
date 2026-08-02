@@ -150,6 +150,21 @@ func (s *Store) LatestRunForTask(taskID int64) (*Run, error) {
 	return &runs[0], nil
 }
 
+// SetRunMessage updates the live progress text on a run (while running or after).
+func (s *Store) SetRunMessage(id int64, message string) error {
+	_, err := s.db.Exec(`UPDATE runs SET message = ? WHERE id = ?`, message, id)
+	return err
+}
+
+// ReportRunProgress sets the run message and emits a run_progress event for the UI.
+func (s *Store) ReportRunProgress(runID, taskID int64, message string) error {
+	if err := s.SetRunMessage(runID, message); err != nil {
+		return err
+	}
+	s.emit(&taskID, "run_progress", truncate(message, 80))
+	return nil
+}
+
 func (s *Store) FinishRun(id int64, status string, exitCode *int, message string) (*Run, error) {
 	switch status {
 	case "exited", "failed", "killed":

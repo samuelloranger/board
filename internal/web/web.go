@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/samuelloranger/board/internal/agent"
@@ -365,7 +366,30 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, runner a
 		writeJSON(w, nil, err)
 		return
 	}
-	started, err := runner.Start(pp.Path, agent.BuildPrompt(tk))
+	var (
+		runID      atomic.Int64
+		lastStdout atomic.Value // string
+	)
+	lastStdout.Store("")
+	started, err := runner.Start(agent.StartOpts{
+		Cwd:    pp.Path,
+		Prompt: agent.BuildPrompt(tk),
+		OnProgress: func(output string) {
+			id := runID.Load()
+			if id == 0 || output == "" {
+				return
+			}
+			// Don't clobber a human-readable note the agent posted via add_note.
+			if run, err := st.GetRun(id); err == nil {
+				prev, _ := lastStdout.Load().(string)
+				if run.Message != "" && run.Message != prev {
+					return
+				}
+			}
+			lastStdout.Store(output)
+			_ = st.ReportRunProgress(id, taskID, output)
+		},
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -383,20 +407,21 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, runner a
 		writeJSON(w, nil, err)
 		return
 	}
+	runID.Store(run.ID)
 	mu.Lock()
 	procs[run.ID] = procEntry{kill: started.Kill}
 	mu.Unlock()
-	go func(runID int64) {
+	go func(rid int64) {
 		code, output, waitErr := started.Wait()
 		mu.Lock()
-		delete(procs, runID)
+		delete(procs, rid)
 		mu.Unlock()
 		status := "exited"
 		if waitErr != nil || code != 0 {
 			status = "failed"
 		}
 		ec := code
-		_, _ = st.FinishRun(runID, status, &ec, output)
+		_, _ = st.FinishRun(rid, status, &ec, output)
 	}(run.ID)
 	writeJSON(w, map[string]any{
 		"run_id":  run.ID,
