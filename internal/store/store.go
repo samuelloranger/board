@@ -126,6 +126,7 @@ func Open(path string) (*Store, error) {
 	// Additive column for agent summary text (existing DBs already created runs).
 	_, _ = db.Exec(`ALTER TABLE runs ADD COLUMN message TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE notes ADD COLUMN author TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE runs ADD COLUMN wait TEXT NOT NULL DEFAULT ''`)
 	return &Store{db: db}, nil
 }
 

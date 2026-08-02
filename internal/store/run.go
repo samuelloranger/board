@@ -17,6 +17,7 @@ type Run struct {
 	EndedAt   *string `json:"ended_at,omitempty"`
 	ExitCode  *int    `json:"exit_code,omitempty"`
 	Message   string  `json:"message,omitempty"`
+	Wait      string  `json:"wait,omitempty"` // "" | "ci"
 }
 
 var ErrRunActive = errors.New("task already has a running agent")
@@ -63,8 +64,8 @@ func (s *Store) GetRun(id int64) (*Run, error) {
 	var pid, exitCode sql.NullInt64
 	var endedAt sql.NullString
 	err := s.db.QueryRow(
-		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message FROM runs WHERE id = ?`, id,
-	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message)
+		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message, wait FROM runs WHERE id = ?`, id,
+	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message, &r.Wait)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -90,7 +91,7 @@ func scanRunExtras(r *Run, pid sql.NullInt64, endedAt sql.NullString, exitCode s
 }
 
 func (s *Store) ListRuns(taskID *int64, status string) ([]Run, error) {
-	q := `SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message FROM runs WHERE 1=1`
+	q := `SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message, wait FROM runs WHERE 1=1`
 	args := []any{}
 	if taskID != nil {
 		q += ` AND task_id = ?`
@@ -111,7 +112,7 @@ func (s *Store) ListRuns(taskID *int64, status string) ([]Run, error) {
 		var r Run
 		var pid, exitCode sql.NullInt64
 		var endedAt sql.NullString
-		if err := rows.Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message); err != nil {
+		if err := rows.Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message, &r.Wait); err != nil {
 			return nil, err
 		}
 		scanRunExtras(&r, pid, endedAt, exitCode)
@@ -125,9 +126,9 @@ func (s *Store) ActiveRunForTask(taskID int64) (*Run, error) {
 	var pid, exitCode sql.NullInt64
 	var endedAt sql.NullString
 	err := s.db.QueryRow(
-		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message
+		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message, wait
 		 FROM runs WHERE task_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1`, taskID,
-	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message)
+	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message, &r.Wait)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -148,6 +149,29 @@ func (s *Store) LatestRunForTask(taskID int64) (*Run, error) {
 		return nil, ErrNotFound
 	}
 	return &runs[0], nil
+}
+
+// SetRunWait sets wait on the active running run for taskID.
+// wait must be "" or "ci". Returns the updated run.
+func (s *Store) SetRunWait(taskID int64, wait string) (*Run, error) {
+	switch wait {
+	case "", "ci":
+	default:
+		return nil, fmt.Errorf("invalid run wait %q", wait)
+	}
+	run, err := s.ActiveRunForTask(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.db.Exec(`UPDATE runs SET wait = ? WHERE id = ?`, wait, run.ID); err != nil {
+		return nil, err
+	}
+	detail := "wait:clear"
+	if wait != "" {
+		detail = "wait:" + wait
+	}
+	s.emit(&taskID, "run_progress", detail)
+	return s.GetRun(run.ID)
 }
 
 // SetRunMessage updates the live progress text on a run (while running or after).
@@ -180,7 +204,7 @@ func (s *Store) FinishRun(id int64, status string, exitCode *int, message string
 	}
 	ts := now()
 	_, err = s.db.Exec(
-		`UPDATE runs SET status = ?, ended_at = ?, exit_code = ?, message = ? WHERE id = ?`,
+		`UPDATE runs SET status = ?, ended_at = ?, exit_code = ?, message = ?, wait = '' WHERE id = ?`,
 		status, ts, exitCode, message, id,
 	)
 	if err != nil {
