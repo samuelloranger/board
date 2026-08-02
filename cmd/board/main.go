@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samuelloranger/board/internal/mcpserver"
@@ -242,6 +243,17 @@ func runServe(args []string, stdout io.Writer) error {
 		return err
 	}
 	defer st.Close()
+	if n, err := st.ReconcileOrphanRuns(func(pid int) bool {
+		p, err := os.FindProcess(pid)
+		if err != nil {
+			return false
+		}
+		return p.Signal(syscall.Signal(0)) == nil
+	}); err != nil {
+		fmt.Fprintf(stdout, "warn: reconcile orphan runs: %v\n", err)
+	} else if n > 0 {
+		fmt.Fprintf(stdout, "reconciled %d orphan agent run(s)\n", n)
+	}
 	fmt.Fprintf(stdout, "board web UI: http://%s\n", addr)
 	return http.ListenAndServe(addr, web.Handler(st))
 }

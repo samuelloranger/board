@@ -1,15 +1,18 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/samuelloranger/board/internal/agent"
 	"github.com/samuelloranger/board/internal/store"
 )
 
@@ -75,4 +78,81 @@ func TestEventsSSEEmitsExisting(t *testing.T) {
 	if !strings.Contains(string(buf[:n]), "created") {
 		t.Fatalf("expected a created event in SSE stream, got %q", string(buf[:n]))
 	}
+}
+
+func TestProjectPathAPI(t *testing.T) {
+	st := newStore(t)
+	srv := httptest.NewServer(Handler(st))
+	defer srv.Close()
+	dir := t.TempDir()
+	body, _ := json.Marshal(map[string]string{"path": dir})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/projects/board/path", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("status=%d err=%v", resp.StatusCode, err)
+	}
+	r2, _ := http.Get(srv.URL + "/api/projects/paths")
+	var list []store.ProjectPath
+	json.NewDecoder(r2.Body).Decode(&list)
+	if len(list) != 1 || list[0].Path != dir {
+		t.Fatalf("%+v", list)
+	}
+}
+
+func TestAnswerQuestionAPI(t *testing.T) {
+	st := newStore(t)
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t"})
+	q, _ := st.CreateQuestion(tk.ID, "q?")
+	srv := httptest.NewServer(Handler(st))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/api/questions/"+strconv.FormatInt(q.ID, 10)+"/answer",
+		"application/json", strings.NewReader(`{"answer":"a"}`))
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("%v %d", err, resp.StatusCode)
+	}
+}
+
+func TestRunNeedPath(t *testing.T) {
+	st := newStore(t)
+	p := "board"
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t", Project: &p})
+	fake := &agent.FakeRunner{}
+	srv := httptest.NewServer(HandlerConfig(Config{Store: st, Runner: fake}))
+	defer srv.Close()
+	resp, _ := http.Post(srv.URL+"/api/tasks/"+strconv.FormatInt(tk.ID, 10)+"/run",
+		"application/json", strings.NewReader(`{"agent":"cursor"}`))
+	if resp.StatusCode != 409 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var body map[string]any
+	json.NewDecoder(resp.Body).Decode(&body)
+	if body["need_path"] != true {
+		t.Fatalf("%v", body)
+	}
+}
+
+func TestRunStartsAgent(t *testing.T) {
+	st := newStore(t)
+	p := "board"
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t", Project: &p})
+	dir := t.TempDir()
+	st.SetProjectPath("board", dir)
+	fake := &agent.FakeRunner{ExitCode: 0}
+	srv := httptest.NewServer(HandlerConfig(Config{Store: st, Runner: fake}))
+	defer srv.Close()
+	resp, _ := http.Post(srv.URL+"/api/tasks/"+strconv.FormatInt(tk.ID, 10)+"/run",
+		"application/json", strings.NewReader(`{"agent":"cursor"}`))
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if fake.LastCwd != dir || !strings.Contains(fake.LastPrompt, "board web UI") {
+		t.Fatalf("cwd=%q prompt=%q", fake.LastCwd, fake.LastPrompt)
+	}
+	tk2, _ := st.GetTask(tk.ID)
+	if tk2.Status != "in_progress" {
+		t.Fatalf("status %s", tk2.Status)
+	}
+	// Allow Wait goroutine to finish.
+	time.Sleep(50 * time.Millisecond)
 }

@@ -8,17 +8,48 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/samuelloranger/board/internal/agent"
 	"github.com/samuelloranger/board/internal/store"
 )
 
 //go:embed all:ui/dist
 var uiFS embed.FS
 
+// Config configures the web handler.
+type Config struct {
+	Store  *store.Store
+	Runner agent.Runner // nil → agent.CursorRunner{}
+}
+
+// procEntry holds a kill func for an in-flight agent process.
+type procEntry struct {
+	kill func() error
+}
+
+// Handler serves the JSON API and embedded UI with the default Cursor runner.
 func Handler(st *store.Store) http.Handler {
+	return HandlerConfig(Config{Store: st})
+}
+
+// HandlerConfig serves the JSON API and embedded UI.
+func HandlerConfig(cfg Config) http.Handler {
+	st := cfg.Store
+	runner := cfg.Runner
+	if runner == nil {
+		runner = agent.CursorRunner{}
+	}
+
+	var (
+		mu    sync.Mutex
+		procs = map[int64]procEntry{}
+	)
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/board", func(w http.ResponseWriter, r *http.Request) {
@@ -52,10 +83,9 @@ func Handler(st *store.Store) http.Handler {
 	})
 
 	mux.HandleFunc("/api/tasks/", func(w http.ResponseWriter, r *http.Request) {
-		// /api/tasks/{id}/{action}; tolerate a trailing slash.
 		trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/tasks/"), "/")
 		parts := strings.Split(trimmed, "/")
-		if len(parts) != 2 {
+		if len(parts) < 2 || len(parts) > 3 {
 			http.NotFound(w, r)
 			return
 		}
@@ -64,7 +94,11 @@ func Handler(st *store.Store) http.Handler {
 			http.Error(w, "bad id", http.StatusBadRequest)
 			return
 		}
-		switch parts[1] {
+		action := parts[1]
+		if len(parts) == 3 {
+			action = parts[1] + "/" + parts[2]
+		}
+		switch action {
 		case "move":
 			var body struct{ Status string }
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -77,8 +111,6 @@ func Handler(st *store.Store) http.Handler {
 			tk, err := st.SetArchived(id, true)
 			writeJSON(w, tk, err)
 		case "update":
-			// Pointer fields: absent (nil) means "leave unchanged"; a present
-			// empty string on priority/due_date clears the column.
 			var body struct {
 				Title       *string   `json:"title"`
 				Description *string   `json:"description"`
@@ -115,6 +147,10 @@ func Handler(st *store.Store) http.Handler {
 			}
 			tk, err := st.Handoff(id, body.To, body.Reason)
 			writeJSON(w, tk, err)
+		case "run":
+			handleRun(w, r, st, runner, id, &mu, procs)
+		case "run/cancel":
+			handleRunCancel(w, r, st, id, &mu, procs)
 		default:
 			http.NotFound(w, r)
 		}
@@ -127,6 +163,119 @@ func Handler(st *store.Store) http.Handler {
 		}
 		res, err := st.Resume(proj)
 		writeJSON(w, res, err)
+	})
+
+	mux.HandleFunc("/api/projects/paths", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+			return
+		}
+		list, err := st.ListProjectPaths()
+		writeJSON(w, list, err)
+	})
+
+	mux.HandleFunc("/api/projects/", func(w http.ResponseWriter, r *http.Request) {
+		trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/projects/"), "/")
+		parts := strings.Split(trimmed, "/")
+		if len(parts) != 2 || parts[1] != "path" {
+			http.NotFound(w, r)
+			return
+		}
+		name := parts[0]
+		if name == "" || name == "*" {
+			name = store.GlobalProjectKey
+		}
+		switch r.Method {
+		case http.MethodPut:
+			var body struct {
+				Path string `json:"path"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid JSON body", http.StatusBadRequest)
+				return
+			}
+			fi, err := os.Stat(body.Path)
+			if err != nil || !fi.IsDir() {
+				http.Error(w, "path must be an existing directory", http.StatusBadRequest)
+				return
+			}
+			pp, err := st.SetProjectPath(name, body.Path)
+			writeJSON(w, pp, err)
+		case http.MethodDelete:
+			err := st.DeleteProjectPath(name)
+			if errors.Is(err, store.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			writeJSON(w, map[string]any{"ok": true}, err)
+		default:
+			http.Error(w, "PUT or DELETE only", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/questions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+			return
+		}
+		var taskID *int64
+		if s := r.URL.Query().Get("task_id"); s != "" {
+			id, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				http.Error(w, "bad task_id", http.StatusBadRequest)
+				return
+			}
+			taskID = &id
+		}
+		status := r.URL.Query().Get("status")
+		list, err := st.ListQuestions(taskID, status)
+		writeJSON(w, list, err)
+	})
+
+	mux.HandleFunc("/api/questions/", func(w http.ResponseWriter, r *http.Request) {
+		trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/questions/"), "/")
+		parts := strings.Split(trimmed, "/")
+		if len(parts) != 2 || parts[1] != "answer" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		id, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Answer string `json:"answer"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		q, err := st.AnswerQuestion(id, body.Answer)
+		if errors.Is(err, store.ErrQuestionClosed) || errors.Is(err, store.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, q, err)
+	})
+
+	mux.HandleFunc("/api/runs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+			return
+		}
+		var taskID *int64
+		if s := r.URL.Query().Get("task_id"); s != "" {
+			id, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				http.Error(w, "bad task_id", http.StatusBadRequest)
+				return
+			}
+			taskID = &id
+		}
+		status := r.URL.Query().Get("status")
+		list, err := st.ListRuns(taskID, status)
+		writeJSON(w, list, err)
 	})
 
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
@@ -157,9 +306,7 @@ func Handler(st *store.Store) http.Handler {
 			}
 			flusher.Flush()
 		}
-		send() // flush existing (backlog) immediately
-		// Mark the end of the replayed backlog so the client can distinguish
-		// historical events (don't bump the unseen badge) from live ones.
+		send()
 		fmt.Fprint(w, "event: synced\ndata: {}\n\n")
 		flusher.Flush()
 		ticker := time.NewTicker(time.Second)
@@ -177,6 +324,117 @@ func Handler(st *store.Store) http.Handler {
 	dist, _ := fs.Sub(uiFS, "ui/dist")
 	mux.Handle("/", http.FileServer(http.FS(dist)))
 	return mux
+}
+
+func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, runner agent.Runner, taskID int64, mu *sync.Mutex, procs map[int64]procEntry) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Agent string `json:"agent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if body.Agent == "" {
+		body.Agent = "cursor"
+	}
+	if body.Agent != "cursor" {
+		http.Error(w, "only agent \"cursor\" is supported in v1", http.StatusBadRequest)
+		return
+	}
+	tk, err := st.GetTask(taskID)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	projKey := store.GlobalProjectKey
+	if tk.Project != nil && *tk.Project != "" {
+		projKey = *tk.Project
+	}
+	pp, err := st.GetProjectPath(projKey)
+	if errors.Is(err, store.ErrNotFound) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]any{"need_path": true, "project": projKey})
+		return
+	}
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	started, err := runner.Start(pp.Path, agent.BuildPrompt(tk))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	run, err := st.CreateRun(taskID, body.Agent, started.PID)
+	if errors.Is(err, store.ErrRunActive) {
+		_ = started.Kill()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		_ = started.Kill()
+		writeJSON(w, nil, err)
+		return
+	}
+	mu.Lock()
+	procs[run.ID] = procEntry{kill: started.Kill}
+	mu.Unlock()
+	go func(runID int64) {
+		code, waitErr := started.Wait()
+		mu.Lock()
+		delete(procs, runID)
+		mu.Unlock()
+		status := "exited"
+		if waitErr != nil || code != 0 {
+			status = "failed"
+		}
+		ec := code
+		_, _ = st.FinishRun(runID, status, &ec)
+	}(run.ID)
+	writeJSON(w, map[string]any{
+		"run_id":  run.ID,
+		"task_id": taskID,
+		"agent":   body.Agent,
+		"status":  "running",
+	}, nil)
+}
+
+func handleRunCancel(w http.ResponseWriter, r *http.Request, st *store.Store, taskID int64, mu *sync.Mutex, procs map[int64]procEntry) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	run, err := st.ActiveRunForTask(taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "no active run", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	mu.Lock()
+	entry, ok := procs[run.ID]
+	mu.Unlock()
+	if ok && entry.kill != nil {
+		_ = entry.kill()
+	} else if run.PID != nil {
+		if p, err := os.FindProcess(*run.PID); err == nil {
+			_ = p.Kill()
+		}
+	}
+	finished, err := st.FinishRun(run.ID, "killed", nil)
+	mu.Lock()
+	delete(procs, run.ID)
+	mu.Unlock()
+	writeJSON(w, finished, err)
 }
 
 func ptrIfSet(s string) *string {
