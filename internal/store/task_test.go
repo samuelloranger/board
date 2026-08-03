@@ -77,6 +77,12 @@ func TestListTasksFilters(t *testing.T) {
 	if len(byProj) != 3 {
 		t.Fatalf("project filter: want 3 (incl. global) got %d", len(byProj))
 	}
+	// "_" means global-only (no pinning): just g1.
+	global := GlobalProjectKey
+	byGlobal, _ := st.ListTasks(ListFilter{Project: &global})
+	if len(byGlobal) != 1 || byGlobal[0].Title != "g1" {
+		t.Fatalf("global filter: want [g1] got %+v", byGlobal)
+	}
 	todo := "todo"
 	byStatus, _ := st.ListTasks(ListFilter{Project: &a, Status: &todo})
 	if len(byStatus) != 2 || byStatus[0].Title != "t1" {

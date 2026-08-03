@@ -24,8 +24,11 @@ var uiFS embed.FS
 
 // Config configures the web handler.
 type Config struct {
-	Store  *store.Store
-	Runner agent.Runner // nil → agent.CursorRunner{}
+	Store *store.Store
+	// Runner, if set, is used for every agent (tests). Otherwise DefaultRunner(name).
+	Runner agent.Runner
+	// Runners optionally overrides individual agents when Runner is nil.
+	Runners map[string]agent.Runner
 }
 
 // procEntry holds a kill func for an in-flight agent process.
@@ -33,7 +36,7 @@ type procEntry struct {
 	kill func() error
 }
 
-// Handler serves the JSON API and embedded UI with the default Cursor runner.
+// Handler serves the JSON API and embedded UI.
 func Handler(st *store.Store) http.Handler {
 	return HandlerConfig(Config{Store: st})
 }
@@ -41,15 +44,23 @@ func Handler(st *store.Store) http.Handler {
 // HandlerConfig serves the JSON API and embedded UI.
 func HandlerConfig(cfg Config) http.Handler {
 	st := cfg.Store
-	runner := cfg.Runner
-	if runner == nil {
-		runner = agent.CursorRunner{}
-	}
 
 	var (
 		mu    sync.Mutex
 		procs = map[int64]procEntry{}
 	)
+
+	resolveRunner := func(name string) (agent.Runner, error) {
+		if cfg.Runner != nil {
+			return cfg.Runner, nil
+		}
+		if cfg.Runners != nil {
+			if r, ok := cfg.Runners[name]; ok {
+				return r, nil
+			}
+		}
+		return agent.DefaultRunner(name)
+	}
 
 	mux := http.NewServeMux()
 
@@ -167,7 +178,7 @@ func HandlerConfig(cfg Config) http.Handler {
 			tk, err := st.ClearHandoff(id)
 			writeJSON(w, tk, err)
 		case "run":
-			handleRun(w, r, st, runner, id, &mu, procs)
+			handleRun(w, r, st, resolveRunner, id, &mu, procs)
 		case "run/cancel":
 			handleRunCancel(w, r, st, id, &mu, procs)
 		default:
@@ -345,7 +356,7 @@ func HandlerConfig(cfg Config) http.Handler {
 	return mux
 }
 
-func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, runner agent.Runner, taskID int64, mu *sync.Mutex, procs map[int64]procEntry) {
+func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, resolveRunner func(string) (agent.Runner, error), taskID int64, mu *sync.Mutex, procs map[int64]procEntry) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
@@ -358,10 +369,11 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, runner a
 		return
 	}
 	if body.Agent == "" {
-		body.Agent = "cursor"
+		body.Agent = agent.AgentCursor
 	}
-	if body.Agent != "cursor" {
-		http.Error(w, "only agent \"cursor\" is supported in v1", http.StatusBadRequest)
+	runner, err := resolveRunner(body.Agent)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	tk, err := st.GetTask(taskID)

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -24,5 +26,72 @@ func TestCursorRunnerMissingBinary(t *testing.T) {
 	_, err := (CursorRunner{}).Start(StartOpts{Cwd: t.TempDir(), Prompt: "hi"})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestClaudeRunnerMissingBinary(t *testing.T) {
+	old := lookPath
+	lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	defer func() { lookPath = old }()
+	_, err := (ClaudeRunner{}).Start(StartOpts{Cwd: t.TempDir(), Prompt: "hi"})
+	if err == nil || !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestCodexRunnerMissingBinary(t *testing.T) {
+	old := lookPath
+	lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	defer func() { lookPath = old }()
+	_, err := (CodexRunner{}).Start(StartOpts{Cwd: t.TempDir(), Prompt: "hi"})
+	if err == nil || !strings.Contains(err.Error(), "codex") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestDefaultRunner(t *testing.T) {
+	cases := []struct {
+		name string
+		want any
+	}{
+		{"", CursorRunner{}},
+		{AgentCursor, CursorRunner{}},
+		{AgentClaude, ClaudeRunner{}},
+		{AgentCodex, CodexRunner{}},
+	}
+	for _, tc := range cases {
+		r, err := DefaultRunner(tc.name)
+		if err != nil || reflect.TypeOf(r) != reflect.TypeOf(tc.want) {
+			t.Fatalf("%q: got %T %v", tc.name, r, err)
+		}
+	}
+	if _, err := DefaultRunner("nope"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestAgentArgs(t *testing.T) {
+	if got := cursorArgs("p"); !reflect.DeepEqual(got, []string{"-p", "--force", "--output-format", "text", "p"}) {
+		t.Fatalf("cursor: %v", got)
+	}
+	if got := claudeArgs("p"); !reflect.DeepEqual(got, []string{"-p", "--dangerously-skip-permissions", "--output-format", "text", "p"}) {
+		t.Fatalf("claude: %v", got)
+	}
+	if got := codexArgs("p"); !reflect.DeepEqual(got, []string{"exec", "--sandbox", "workspace-write", "p"}) {
+		t.Fatalf("codex: %v", got)
+	}
+}
+
+func TestWithoutEnvKeysStripsAPIKey(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"ANTHROPIC_API_KEY=sk-secret",
+		"HOME=/home/u",
+		"ANTHROPIC_API_KEY_EXTRA=keep",
+	}
+	got := withoutEnvKeys(env, "ANTHROPIC_API_KEY")
+	want := []string{"PATH=/usr/bin", "HOME=/home/u", "ANTHROPIC_API_KEY_EXTRA=keep"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
 	}
 }

@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -325,13 +326,18 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "set_run_wait",
 		Description: "Mark the active agent run as waiting on CI (wait='ci') or clear waiting (wait=''). " +
-			"Use when blocked on GitHub Actions or similar; clear when you resume work.",
+			"Use when blocked on GitHub Actions or similar; clear when you resume work. " +
+			"No-op (returns ok) if there is no active Cursor-spawned run for the task.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
 		TaskID int64  `json:"task_id"`
 		Wait   string `json:"wait"`
 	}) (*mcp.CallToolResult, any, error) {
 		run, err := st.SetRunWait(a.TaskID, a.Wait)
 		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				// Plain Claude/Codex sessions have no runs row — don't error.
+				return nil, map[string]any{"ok": true, "wait": a.Wait}, nil
+			}
 			return nil, nil, err
 		}
 		return nil, map[string]any{"id": run.ID, "task_id": run.TaskID, "wait": run.Wait}, nil

@@ -146,10 +146,15 @@ func (s *Store) ListTasks(f ListFilter) ([]*Task, error) {
 	q := `SELECT id FROM tasks WHERE 1=1`
 	var args []any
 	if f.Project != nil {
-		// Global (NULL-project) tasks are pinned into every project-scoped
-		// view, so a task created outside any repo is never invisible.
-		q += ` AND (project = ? OR project IS NULL)`
-		args = append(args, *f.Project)
+		if *f.Project == GlobalProjectKey {
+			// UI "global" filter ("_"): only NULL-project tasks.
+			q += ` AND project IS NULL`
+		} else {
+			// Global (NULL-project) tasks are pinned into every project-scoped
+			// view, so a task created outside any repo is never invisible.
+			q += ` AND (project = ? OR project IS NULL)`
+			args = append(args, *f.Project)
+		}
 	}
 	if f.Status != nil {
 		q += ` AND status = ?`

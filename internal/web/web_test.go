@@ -173,3 +173,41 @@ func TestRunStartsAgent(t *testing.T) {
 	// Allow Wait goroutine to finish.
 	time.Sleep(50 * time.Millisecond)
 }
+
+func TestRunAcceptsClaudeAndCodex(t *testing.T) {
+	st := newStore(t)
+	p := "board"
+	dir := t.TempDir()
+	st.SetProjectPath("board", dir)
+	for _, name := range []string{"claude", "codex"} {
+		tk, _ := st.CreateTask(store.CreateTaskParams{Title: name, Project: &p})
+		fake := &agent.FakeRunner{ExitCode: 0}
+		srv := httptest.NewServer(HandlerConfig(Config{Store: st, Runner: fake}))
+		resp, _ := http.Post(srv.URL+"/api/tasks/"+strconv.FormatInt(tk.ID, 10)+"/run",
+			"application/json", strings.NewReader(`{"agent":"`+name+`"}`))
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s status %d", name, resp.StatusCode)
+		}
+		var body map[string]any
+		json.NewDecoder(resp.Body).Decode(&body)
+		srv.Close()
+		if body["agent"] != name {
+			t.Fatalf("%s body=%v", name, body)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestRunRejectsUnknownAgent(t *testing.T) {
+	st := newStore(t)
+	p := "board"
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t", Project: &p})
+	st.SetProjectPath("board", t.TempDir())
+	srv := httptest.NewServer(Handler(st))
+	defer srv.Close()
+	resp, _ := http.Post(srv.URL+"/api/tasks/"+strconv.FormatInt(tk.ID, 10)+"/run",
+		"application/json", strings.NewReader(`{"agent":"windsurf"}`))
+	if resp.StatusCode != 400 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}

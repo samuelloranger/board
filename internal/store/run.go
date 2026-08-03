@@ -166,11 +166,11 @@ func (s *Store) SetRunWait(taskID int64, wait string) (*Run, error) {
 	if _, err := s.db.Exec(`UPDATE runs SET wait = ? WHERE id = ?`, wait, run.ID); err != nil {
 		return nil, err
 	}
-	detail := "wait:clear"
+	detail := "resumed"
 	if wait != "" {
-		detail = "wait:" + wait
+		detail = "waiting on CI"
 	}
-	s.emit(&taskID, "run_progress", detail)
+	s.emit(&taskID, "run_wait", detail)
 	return s.GetRun(run.ID)
 }
 

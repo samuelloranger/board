@@ -12,6 +12,12 @@
     { key: "medium", label: "Med" },
     { key: "high", label: "High" },
   ];
+  const AGENTS = [
+    { key: "cursor", label: "Cursor" },
+    { key: "claude", label: "Claude" },
+    { key: "codex", label: "Codex" },
+  ];
+  const AGENT_LABEL = Object.fromEntries(AGENTS.map((a) => [a.key, a.label]));
 
   let board = $state({ todo: [], in_progress: [], done: [] });
   let events = $state([]);
@@ -21,8 +27,10 @@
   let showActivity = $state(false);
   let showAdd = $state(false);
   let openMenu = $state(null);
+  let openAgentMenu = $state(null); // task id | "detail" | null
   let dragOver = $state(null);
   let addTitle = $state("");
+  let addDescription = $state("");
   let addPriority = $state("");
   let addProject = $state("");
   let unseen = $state(0);
@@ -36,6 +44,7 @@
   let latestByTask = $state({}); // task_id -> latest run
   let startingIds = $state({}); // task_id -> true while POST /run in flight
   let projectPaths = $state([]);
+  let chipProjects = $state([]); // names from board ∪ paths; "_" = global
   let showProjects = $state(false);
   let needPath = $state(null); // { project, taskId }
   let pathInput = $state("");
@@ -43,6 +52,24 @@
   let answerDraft = $state("");
   let projectFilter = $state("*"); // "*" = All
   let showNotifyBanner = $state(false);
+  let selectedAgent = $state(loadSelectedAgent());
+
+  function loadSelectedAgent() {
+    try {
+      const v = localStorage.getItem("board-default-agent");
+      if (v && AGENT_LABEL[v]) return v;
+    } catch {}
+    return "cursor";
+  }
+  function setSelectedAgent(key) {
+    if (!AGENT_LABEL[key]) return;
+    selectedAgent = key;
+    openAgentMenu = null;
+    try { localStorage.setItem("board-default-agent", key); } catch {}
+  }
+  function agentLabel(key) {
+    return AGENT_LABEL[key] || key || "Agent";
+  }
 
   function applyTheme(t) {
     theme = t;
@@ -63,12 +90,38 @@
     load();
   }
 
+  function deriveChipProjects(b, paths) {
+    const named = new Set();
+    let hasGlobal = false;
+    for (const col of COLUMNS) {
+      for (const t of b?.[col.key] ?? []) {
+        if (t.project) named.add(t.project);
+        else hasGlobal = true;
+      }
+    }
+    for (const pp of paths ?? []) {
+      if (pp.project && pp.project !== "_") named.add(pp.project);
+    }
+    const list = [...named].sort((a, b) => a.localeCompare(b));
+    if (hasGlobal) list.unshift("_");
+    return list;
+  }
+
   async function load() {
+    // Full board first so chips cover every project with tasks (not just paths).
+    const allBoard = await (await fetch("/api/board?project=*")).json();
+    await loadAgentState();
+    chipProjects = deriveChipProjects(allBoard, projectPaths);
+
+    if (projectFilter !== "*" && !chipProjects.includes(projectFilter)) {
+      projectFilter = "*";
+      try { localStorage.setItem("board-project-filter", "*"); } catch {}
+    }
+
     const q = projectFilter === "*" ? "*" : projectFilter;
-    board = await (await fetch(`/api/board?project=${encodeURIComponent(q)}`)).json();
+    board = q === "*" ? allBoard : await (await fetch(`/api/board?project=${encodeURIComponent(q)}`)).json();
     const res = await (await fetch(`/api/resume?project=${encodeURIComponent(q)}`)).json();
     handoffs = res.handoffs ?? [];
-    await loadAgentState();
   }
   async function loadAgentState() {
     pendingQuestions = await (await fetch("/api/questions?status=pending")).json();
@@ -164,14 +217,15 @@
     if (!t) return true;
     return (t.project || "") === projectFilter || (projectFilter === "_" && !t.project);
   }
-  async function runTask(id) {
+  async function runTask(id, agent = selectedAgent) {
     runError = "";
     needPath = null;
+    setSelectedAgent(agent);
     startingIds = { ...startingIds, [id]: true };
     try {
       const resp = await fetch(`/api/tasks/${id}/run`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent: "cursor" }),
+        body: JSON.stringify({ agent }),
       });
       if (resp.status === 409) {
         const body = await resp.json();
@@ -266,14 +320,16 @@
     const title = addTitle.trim();
     if (!title) return;
     const project = addProject.trim();
+    const description = addDescription.trim();
     await fetch("/api/tasks", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title, status: "todo", priority: addPriority,
+        ...(description ? { description } : {}),
         ...(project ? { project } : {}),
       }),
     });
-    addTitle = ""; addPriority = ""; addProject = ""; showAdd = false;
+    addTitle = ""; addDescription = ""; addPriority = ""; addProject = ""; showAdd = false;
     await load();
   }
 
@@ -438,12 +494,12 @@
     const t = findTask(e.task_id);
     return t ? t.title : "";
   }
-  const eventKindLabel = { created: "created", moved: "moved", note: "note", handoff: "handoff", archived: "archived", unarchived: "restored", updated: "updated", deleted: "deleted", tool: "tool", session: "session", run: "run", run_done: "run done", run_progress: "progress", question: "question", answered: "answered" };
+  const eventKindLabel = { created: "created", moved: "moved", note: "note", handoff: "handoff", archived: "archived", unarchived: "restored", updated: "updated", deleted: "deleted", tool: "tool", session: "session", run: "run", run_done: "run done", run_progress: "progress", run_wait: "wait", question: "question", answered: "answered" };
   const eventKindVerb = {
     created: "Created", moved: "Moved", note: "Note on", handoff: "Handed off",
     archived: "Archived", unarchived: "Restored", updated: "Updated", deleted: "Deleted",
     tool: "Tool", session: "Session", run: "Started agent on", run_done: "Agent finished",
-    run_progress: "Progress on", question: "Asked on", answered: "Answered on",
+    run_progress: "Progress on", run_wait: "Wait on", question: "Asked on", answered: "Answered on",
   };
 
   $effect(() => {
@@ -482,7 +538,7 @@
     es.onmessage = (m) => {
       const ev = JSON.parse(m.data);
       events = [ev, ...events].slice(0, 60);
-      if (!syncing && !showActivity) unseen = Math.min(unseen + 1, 99);
+      if (!syncing) unseen = Math.min(unseen + 1, 99);
       if (!syncing && ev.kind === "question" && ev.task_id) {
         notifyAsk(ev.task_id, ev.detail);
         if (!detail) openDetail(findTask(ev.task_id) ?? { id: ev.task_id });
@@ -509,7 +565,8 @@
     };
   });
 
-  function toggleActivity() { showActivity = !showActivity; if (showActivity) unseen = 0; }
+  function toggleActivity() { showActivity = !showActivity; }
+  function markAllSeen() { unseen = 0; }
 
   // Close the open card menu on outside click (defer so the opening click doesn't close it).
   $effect(() => {
@@ -518,6 +575,19 @@
     const timer = setTimeout(() => {
       const onDocClick = (e) => {
         if (!e.target.closest(".menu") && !e.target.closest(".menu-btn")) openMenu = null;
+      };
+      window.addEventListener("click", onDocClick);
+      remove = () => window.removeEventListener("click", onDocClick);
+    }, 0);
+    return () => { clearTimeout(timer); remove(); };
+  });
+
+  $effect(() => {
+    if (openAgentMenu === null) return;
+    let remove = () => {};
+    const timer = setTimeout(() => {
+      const onDocClick = (e) => {
+        if (!e.target.closest(".run-split")) openAgentMenu = null;
       };
       window.addEventListener("click", onDocClick);
       remove = () => window.removeEventListener("click", onDocClick);
@@ -538,6 +608,7 @@
 {#snippet iconEdit()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>{/snippet}
 {#snippet iconFolder()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>{/snippet}
 {#snippet iconPlay()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg>{/snippet}
+{#snippet iconChevron()}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>{/snippet}
 
 <header class="topbar">
   <div class="brand">
@@ -573,11 +644,11 @@
 
 <nav class="proj-filter" aria-label="Filter by project">
   <button class:active={projectFilter === "*"} onclick={() => setProjectFilter("*")}>All</button>
-  {#each projectPaths as pp (pp.project)}
+  {#each chipProjects as p (p)}
     <button
-      class:active={projectFilter === pp.project}
-      onclick={() => setProjectFilter(pp.project)}
-    >{pp.project === "_" ? "global" : pp.project}</button>
+      class:active={projectFilter === p}
+      onclick={() => setProjectFilter(p)}
+    >{p === "_" ? "global" : p}</button>
   {/each}
 </nav>
 
@@ -684,7 +755,7 @@
                 {#if latestRun(t.id)?.message}
                   <p class="agent-msg">{latestRun(t.id).message}</p>
                 {:else if isWorking(t.id) && !pendingAskFor(t.id)}
-                  <p class="agent-msg muted">Cursor is on it…</p>
+                  <p class="agent-msg muted">{agentLabel(latestRun(t.id)?.agent || selectedAgent)} is on it…</p>
                 {/if}
               </div>
             {/if}
@@ -696,10 +767,29 @@
                   onclick={(e) => { e.stopPropagation(); cancelRun(t.id); }}
                 >Cancel</button>
               {:else}
-                <button
-                  class="btn-run"
-                  onclick={(e) => { e.stopPropagation(); openMenu = null; runTask(t.id); }}
-                >{@render iconPlay()}<span>Run</span></button>
+                <div class="run-split">
+                  <button
+                    class="btn-run"
+                    onclick={(e) => { e.stopPropagation(); openMenu = null; openAgentMenu = null; runTask(t.id); }}
+                  >{@render iconPlay()}<span>Run</span></button>
+                  <button
+                    class="btn-run-chevron"
+                    aria-label="Choose agent"
+                    aria-expanded={openAgentMenu === t.id}
+                    onclick={(e) => { e.stopPropagation(); openMenu = null; openAgentMenu = openAgentMenu === t.id ? null : t.id; }}
+                  >{@render iconChevron()}</button>
+                  {#if openAgentMenu === t.id}
+                    <div class="run-menu" role="menu">
+                      {#each AGENTS as a}
+                        <button
+                          role="menuitem"
+                          class:active={selectedAgent === a.key}
+                          onclick={(e) => { e.stopPropagation(); setSelectedAgent(a.key); runTask(t.id, a.key); }}
+                        >{a.label}</button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
               {/if}
             </div>
             {#if openMenu === t.id}
@@ -757,6 +847,15 @@
         <span class="field-hint">Add a project path (folder icon) to assign tasks to a project.</span>
       {/if}
     </label>
+    <label class="field">
+      <span>Description (markdown)</span>
+      <textarea
+        rows="4"
+        bind:value={addDescription}
+        placeholder="Optional context…"
+        onkeydown={(e) => { if (e.key === "Escape") showAdd = false; }}
+      ></textarea>
+    </label>
     <div class="field">
       <span>Priority</span>
       <div class="pri-seg">
@@ -785,7 +884,12 @@
   <div class="activity" role="dialog" aria-label="Activity feed">
     <div class="activity-head">
       <div class="live">{@render iconActivity()}<span>Activity</span></div>
-      <button class="icon-btn sm" aria-label="Close activity" onclick={() => (showActivity = false)}>{@render iconClose()}</button>
+      <div class="head-actions">
+        {#if unseen > 0}
+          <button class="btn-ghost sm" onclick={markAllSeen}>Seen all</button>
+        {/if}
+        <button class="icon-btn sm" aria-label="Close activity" onclick={() => (showActivity = false)}>{@render iconClose()}</button>
+      </div>
     </div>
     <div class="feed">
       {#if events.length === 0}<div class="empty">No activity yet</div>{/if}
@@ -910,7 +1014,26 @@
             <button class="btn-ghost sm" onclick={() => moveFromDetail(m.key)}>Move to {m.label}</button>
           {/each}
           {#if !isWorking(detail.id)}
-            <button class="btn-run sm" onclick={() => runTask(detail.id)}>{@render iconPlay()}<span>Run</span></button>
+            <div class="run-split sm">
+              <button class="btn-run sm" onclick={() => { openAgentMenu = null; runTask(detail.id); }}>{@render iconPlay()}<span>Run</span></button>
+              <button
+                class="btn-run-chevron sm"
+                aria-label="Choose agent"
+                aria-expanded={openAgentMenu === "detail"}
+                onclick={() => (openAgentMenu = openAgentMenu === "detail" ? null : "detail")}
+              >{@render iconChevron()}</button>
+              {#if openAgentMenu === "detail"}
+                <div class="run-menu" role="menu">
+                  {#each AGENTS as a}
+                    <button
+                      role="menuitem"
+                      class:active={selectedAgent === a.key}
+                      onclick={() => { setSelectedAgent(a.key); runTask(detail.id, a.key); }}
+                    >{a.label}</button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
           {/if}
         </div>
         {#if needPath && needPath.taskId === detail.id}
@@ -1094,6 +1217,37 @@
   .btn-run:disabled { opacity: .55; cursor: wait; }
   .btn-run.cancel { background: color-mix(in srgb, var(--danger) 85%, #000); }
   .btn-run.sm { min-height: 32px; padding: 0 10px; font-size: 12px; }
+  .run-split {
+    position: relative; display: inline-flex; align-items: stretch;
+  }
+  .run-split > .btn-run {
+    border-radius: 9px 0 0 9px;
+  }
+  .btn-run-chevron {
+    display: grid; place-items: center;
+    min-width: 28px; border: none; border-left: 1px solid color-mix(in srgb, #fff 28%, transparent);
+    border-radius: 0 9px 9px 0; background: var(--prog); color: #fff;
+    cursor: pointer; padding: 0 4px;
+    transition: filter .12s ease;
+  }
+  .btn-run-chevron svg { width: 14px; height: 14px; }
+  .btn-run-chevron:hover { filter: brightness(1.08); }
+  .btn-run-chevron.sm { min-width: 26px; }
+  .run-split.sm > .btn-run { min-height: 32px; padding: 0 10px; font-size: 12px; }
+  .run-menu {
+    position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5;
+    min-width: 120px; padding: 4px; border-radius: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    box-shadow: 0 8px 24px color-mix(in srgb, #000 28%, transparent);
+    display: grid; gap: 2px;
+  }
+  .run-menu button {
+    text-align: left; border: none; border-radius: 7px; background: transparent;
+    color: var(--text); font-family: inherit; font-size: 13px; font-weight: 550;
+    padding: 8px 10px; cursor: pointer;
+  }
+  .run-menu button:hover { background: color-mix(in srgb, var(--prog) 14%, transparent); }
+  .run-menu button.active { color: var(--prog); font-weight: 700; }
   .agent-status {
     margin-top: 10px; padding: 8px 10px; border-radius: 9px;
     border: 1px solid var(--border); background: var(--surface-2);

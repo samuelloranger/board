@@ -262,8 +262,12 @@ func TestSetRunWaitTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallTool transport: %v", err)
 	}
-	if res == nil || !res.IsError {
-		t.Fatal("expected tool error with no active run")
+	if res.IsError {
+		t.Fatal("expected silent no-op with no active run, got tool error")
+	}
+	noop := structOut(t, res)
+	if noop["ok"] != true {
+		t.Fatalf("noop ack: %#v", noop)
 	}
 	if _, err := st.CreateRun(tk.ID, "cursor", 1); err != nil {
 		t.Fatal(err)
