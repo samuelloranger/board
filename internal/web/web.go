@@ -311,6 +311,44 @@ func HandlerConfig(cfg Config) http.Handler {
 		writeJSON(w, list, err)
 	})
 
+	mux.HandleFunc("/api/runs/", func(w http.ResponseWriter, r *http.Request) {
+		trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/runs/"), "/")
+		parts := strings.Split(trimmed, "/")
+		if len(parts) != 2 || parts[1] != "files" {
+			http.NotFound(w, r)
+			return
+		}
+		id, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			files, err := st.ListRunFiles(id)
+			writeJSON(w, files, err)
+		case http.MethodPost:
+			var body struct {
+				Path string `json:"path"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid JSON body", http.StatusBadRequest)
+				return
+			}
+			if err := st.AddRunFile(id, body.Path); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, map[string]any{"ok": true}, nil)
+		default:
+			http.Error(w, "GET or POST only", http.StatusMethodNotAllowed)
+		}
+	})
+
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -418,9 +456,26 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, resolveR
 		lastStdout atomic.Value // string
 	)
 	lastStdout.Store("")
+	run, err := st.CreateRun(taskID, body.Agent, 0)
+	if errors.Is(err, store.ErrRunActive) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	runID.Store(run.ID)
+	env := append(os.Environ(),
+		fmt.Sprintf("BOARD_TASK_ID=%d", taskID),
+		fmt.Sprintf("BOARD_RUN_ID=%d", run.ID),
+	)
 	started, err := runner.Start(agent.StartOpts{
 		Cwd:    pp.Path,
 		Prompt: agent.BuildPrompt(tk),
+		Env:    env,
 		OnProgress: func(output string) {
 			id := runID.Load()
 			if id == 0 || output == "" {
@@ -438,23 +493,18 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, resolveR
 		},
 	})
 	if err != nil {
+		code := -1
+		_, _ = st.FinishRun(run.ID, "failed", &code, err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	run, err := st.CreateRun(taskID, body.Agent, started.PID)
-	if errors.Is(err, store.ErrRunActive) {
+	if err := st.SetRunPID(run.ID, started.PID); err != nil {
 		_ = started.Kill()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
-		return
-	}
-	if err != nil {
-		_ = started.Kill()
+		code := -1
+		_, _ = st.FinishRun(run.ID, "failed", &code, err.Error())
 		writeJSON(w, nil, err)
 		return
 	}
-	runID.Store(run.ID)
 	mu.Lock()
 	procs[run.ID] = procEntry{kill: started.Kill}
 	mu.Unlock()
