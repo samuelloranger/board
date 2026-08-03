@@ -53,6 +53,7 @@
   let projectFilter = $state("*"); // "*" = All
   let showNotifyBanner = $state(false);
   let selectedAgent = $state(loadSelectedAgent());
+  let runFiles = $state([]); // files for open detail's latest run
 
   function loadSelectedAgent() {
     try {
@@ -162,6 +163,15 @@
     const r = latestRun(id);
     if (r?.status === "running" && r.wait === "ci") return "Waiting on CI";
     return runStatusLabel(id);
+  }
+  function agentStatusText(id) {
+    const label = waitStatusLabel(id);
+    if (!label) return "";
+    const r = latestRun(id);
+    const whoKey = r?.agent || (isStarting(id) ? selectedAgent : "");
+    if (!whoKey && !pendingAskFor(id)) return label;
+    const who = agentLabel(whoKey || selectedAgent);
+    return `${who} · ${label}`;
   }
   function waitStatusClass(id) {
     if (pendingAskFor(id)) return "waiting-you";
@@ -383,6 +393,7 @@
     } else {
       seenNoteIds = new Set();
     }
+    if (detail?.id === t.id) await loadRunFilesForDetail();
   }
   function applyNoteEntrance(notes) {
     const ids = (notes ?? []).map((n) => n.id);
@@ -408,10 +419,33 @@
       const t = findTask(detail.id);
       if (t) detail = t;
     }
+    await loadRunFilesForDetail();
+  }
+  async function loadRunFilesForDetail() {
+    if (!detail) {
+      runFiles = [];
+      return;
+    }
+    const r = latestRun(detail.id);
+    if (!r?.id) {
+      runFiles = [];
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/runs/${r.id}/files`);
+      if (!resp.ok) {
+        runFiles = [];
+        return;
+      }
+      runFiles = await resp.json() ?? [];
+    } catch {
+      runFiles = [];
+    }
   }
   function closeDetail({ skipURL = false } = {}) {
     detail = null; editing = false; needPath = null; runError = "";
     seenNoteIds = new Set(); animNoteIds = {};
+    runFiles = [];
     if (!skipURL && taskIdFromURL() != null) setTaskURL(null);
   }
   function startEdit() {
@@ -494,12 +528,12 @@
     const t = findTask(e.task_id);
     return t ? t.title : "";
   }
-  const eventKindLabel = { created: "created", moved: "moved", note: "note", handoff: "handoff", archived: "archived", unarchived: "restored", updated: "updated", deleted: "deleted", tool: "tool", session: "session", run: "run", run_done: "run done", run_progress: "progress", run_wait: "wait", question: "question", answered: "answered" };
+  const eventKindLabel = { created: "created", moved: "moved", note: "note", handoff: "handoff", archived: "archived", unarchived: "restored", updated: "updated", deleted: "deleted", tool: "tool", session: "session", run: "run", run_done: "run done", run_progress: "progress", run_wait: "wait", run_file: "file", question: "question", answered: "answered" };
   const eventKindVerb = {
     created: "Created", moved: "Moved", note: "Note on", handoff: "Handed off",
     archived: "Archived", unarchived: "Restored", updated: "Updated", deleted: "Deleted",
     tool: "Tool", session: "Session", run: "Started agent on", run_done: "Agent finished",
-    run_progress: "Progress on", run_wait: "Wait on", question: "Asked on", answered: "Answered on",
+    run_progress: "Progress on", run_wait: "Wait on", run_file: "Edited on", question: "Asked on", answered: "Answered on",
   };
 
   $effect(() => {
@@ -753,8 +787,14 @@
             </div>
             {#if latestRun(t.id) || isStarting(t.id) || taskHasPending(t.id)}
               <div class="agent-status s-{waitStatusClass(t.id)}">
-                <span class="agent-label">{waitStatusLabel(t.id)}</span>
-                {#if latestRun(t.id)?.message}
+                <span class="agent-label">{agentStatusText(t.id)}</span>
+                {#if (t.recent_agent_notes ?? []).length}
+                  <ul class="agent-thread">
+                    {#each t.recent_agent_notes as n (n.id)}
+                      <li class="agent-thread-item">{n.body}</li>
+                    {/each}
+                  </ul>
+                {:else if latestRun(t.id)?.message}
                   <p class="agent-msg">{latestRun(t.id).message}</p>
                 {:else if isWorking(t.id) && !pendingAskFor(t.id)}
                   <p class="agent-msg muted">{agentLabel(latestRun(t.id)?.agent || selectedAgent)} is on it…</p>
@@ -933,7 +973,7 @@
         {#if isWorking(detail.id) || pendingAskFor(detail.id) || (latestRun(detail.id) && ["exited","failed","killed"].includes(latestRun(detail.id).status))}
           <span class="d-working s-{waitStatusClass(detail.id)}">
             {#if isWorking(detail.id) || pendingAskFor(detail.id)}<span class="agent-pulse" aria-hidden="true"></span>{/if}
-            {waitStatusLabel(detail.id)}
+            {agentStatusText(detail.id)}
           </span>
         {/if}
       </div>
@@ -1057,6 +1097,20 @@
             <p class="d-desc is-muted">No description</p>
           {/if}
         </div>
+        {#if latestRun(detail.id)}
+          <div class="d-section files-touched">
+            <h4>Files touched</h4>
+            {#if runFiles.length === 0}
+              <p class="d-desc is-muted">No files recorded yet</p>
+            {:else}
+              <ul class="files-list">
+                {#each runFiles.slice(0, 40) as f (f.path)}
+                  <li><code>{f.path}</code></li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
         <div class="d-section">
           <h4>Thread {(detail.notes ?? []).length ? `(${detail.notes.length})` : ""}</h4>
           {#if pendingAskFor(detail.id)}
@@ -1289,6 +1343,38 @@
     display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
   }
   .agent-msg.muted { color: var(--muted); -webkit-line-clamp: 2; }
+  .agent-thread {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .agent-thread-item {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--text);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    opacity: 0.9;
+  }
+  .files-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .files-list code {
+    font-size: 12px;
+    color: var(--muted);
+    word-break: break-all;
+  }
   .card.working { box-shadow: 0 0 0 1px color-mix(in srgb, var(--prog) 50%, transparent), var(--shadow); }
   .card.run-failed { box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent), var(--shadow); }
   .card.run-done { box-shadow: 0 0 0 1px color-mix(in srgb, var(--done) 35%, transparent), var(--shadow); }
