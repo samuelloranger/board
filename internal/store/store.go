@@ -160,6 +160,13 @@ CREATE INDEX IF NOT EXISTS idx_questions_task ON questions(task_id);
 CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
+CREATE TABLE IF NOT EXISTS run_files (
+  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_run_files_run ON run_files(run_id);
 `
 
 func (s *Store) Close() error { return s.db.Close() }

@@ -174,6 +174,22 @@ func (s *Store) SetRunWait(taskID int64, wait string) (*Run, error) {
 	return s.GetRun(run.ID)
 }
 
+// SetRunPID updates runs.pid after the agent process has started.
+func (s *Store) SetRunPID(runID int64, pid int) error {
+	res, err := s.db.Exec(`UPDATE runs SET pid = ? WHERE id = ?`, pid, runID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetRunMessage updates the live progress text on a run (while running or after).
 func (s *Store) SetRunMessage(id int64, message string) error {
 	_, err := s.db.Exec(`UPDATE runs SET message = ? WHERE id = ?`, message, id)
