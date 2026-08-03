@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,7 +47,7 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: board <mcp|serve|setup|list|board|add|move|archive|note> ...")
+		return fmt.Errorf("usage: board <mcp|serve|setup|list|board|add|move|archive|note|event|run> ...")
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
@@ -70,6 +71,8 @@ func run(args []string, stdout io.Writer) error {
 		return cmdNote(rest, stdout)
 	case "event":
 		return cmdEvent(rest, stdout)
+	case "run":
+		return cmdRun(rest, stdout)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -225,6 +228,37 @@ func cmdEvent(args []string, stdout io.Writer) error {
 	return st.LogEvent(args[0], detail)
 }
 
+func cmdRun(args []string, stdout io.Writer) error {
+	if len(args) < 1 || args[0] != "file" {
+		return fmt.Errorf("usage: board run file <path>")
+	}
+	return cmdRunFile(args[1:], stdout)
+}
+
+// cmdRunFile records a touched path on the run named by BOARD_RUN_ID.
+// Missing/invalid env or store errors fail open (nil) so agent hooks never break.
+func cmdRunFile(args []string, stdout io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: board run file <path>")
+	}
+	path := strings.Join(args, " ")
+	ridStr := os.Getenv("BOARD_RUN_ID")
+	if ridStr == "" {
+		return nil
+	}
+	rid, err := strconv.ParseInt(ridStr, 10, 64)
+	if err != nil || rid <= 0 {
+		return nil
+	}
+	st, err := openStore()
+	if err != nil {
+		return nil
+	}
+	defer st.Close()
+	_ = st.AddRunFile(rid, path)
+	return nil
+}
+
 func runServe(args []string, stdout io.Writer) error {
 	addr := "127.0.0.1:7420"
 	for len(args) > 0 {
@@ -255,7 +289,30 @@ func runServe(args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "reconciled %d orphan agent run(s)\n", n)
 	}
 	fmt.Fprintf(stdout, "board web UI: http://%s\n", addr)
-	return http.ListenAndServe(addr, web.Handler(st))
+	// A non-loopback --addr is an explicit choice to serve that host, so accept
+	// it as a Host header too; loopback is always allowed. An unspecified bind
+	// (0.0.0.0 / ::) can be reached under any name, so the Host check is off.
+	return http.ListenAndServe(addr, web.HandlerConfig(web.Config{
+		Store:        st,
+		AllowedHosts: []string{allowedHostFor(addr)},
+	}))
+}
+
+// allowedHostFor maps a listen address to the extra Host header to accept:
+// the bound host, or "*" when the bind is unspecified and any name may reach it.
+func allowedHostFor(addr string) string {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return "*"
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return "*"
+	}
+	return host
 }
 
 func runSetup(args []string, stdout io.Writer) error {

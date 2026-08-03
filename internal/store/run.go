@@ -6,25 +6,32 @@ import (
 	"fmt"
 )
 
+// Message provenance for runs.message_source — who last wrote runs.message.
+const (
+	MessageSourceStdout = "stdout" // agent process stdout (OnProgress)
+	MessageSourceNote   = "note"   // mirrored from add_note
+)
+
 // Run tracks a spawned agent process for a task.
 type Run struct {
-	ID        int64   `json:"id"`
-	TaskID    int64   `json:"task_id"`
-	Agent     string  `json:"agent"`
-	PID       *int    `json:"pid,omitempty"`
-	Status    string  `json:"status"`
-	StartedAt string  `json:"started_at"`
-	EndedAt   *string `json:"ended_at,omitempty"`
-	ExitCode  *int    `json:"exit_code,omitempty"`
-	Message   string  `json:"message,omitempty"`
-	Wait      string  `json:"wait,omitempty"` // "" | "ci"
+	ID            int64   `json:"id"`
+	TaskID        int64   `json:"task_id"`
+	Agent         string  `json:"agent"`
+	PID           *int    `json:"pid,omitempty"`
+	Status        string  `json:"status"`
+	StartedAt     string  `json:"started_at"`
+	EndedAt       *string `json:"ended_at,omitempty"`
+	ExitCode      *int    `json:"exit_code,omitempty"`
+	Message       string  `json:"message,omitempty"`
+	MessageSource string  `json:"-"`              // "" | stdout | note
+	Wait          string  `json:"wait,omitempty"` // "" | "ci"
 }
 
 var ErrRunActive = errors.New("task already has a running agent")
 
 func (s *Store) CreateRun(taskID int64, agent string, pid int) (*Run, error) {
 	if agent == "" {
-		return nil, errors.New("agent is required")
+		return nil, Invalid("agent is required")
 	}
 	if _, err := s.GetTask(taskID); err != nil {
 		return nil, err
@@ -64,8 +71,8 @@ func (s *Store) GetRun(id int64) (*Run, error) {
 	var pid, exitCode sql.NullInt64
 	var endedAt sql.NullString
 	err := s.db.QueryRow(
-		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message, wait FROM runs WHERE id = ?`, id,
-	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message, &r.Wait)
+		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message, message_source, wait FROM runs WHERE id = ?`, id,
+	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message, &r.MessageSource, &r.Wait)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -91,7 +98,7 @@ func scanRunExtras(r *Run, pid sql.NullInt64, endedAt sql.NullString, exitCode s
 }
 
 func (s *Store) ListRuns(taskID *int64, status string) ([]Run, error) {
-	q := `SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message, wait FROM runs WHERE 1=1`
+	q := `SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message, message_source, wait FROM runs WHERE 1=1`
 	args := []any{}
 	if taskID != nil {
 		q += ` AND task_id = ?`
@@ -112,7 +119,7 @@ func (s *Store) ListRuns(taskID *int64, status string) ([]Run, error) {
 		var r Run
 		var pid, exitCode sql.NullInt64
 		var endedAt sql.NullString
-		if err := rows.Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message, &r.Wait); err != nil {
+		if err := rows.Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message, &r.MessageSource, &r.Wait); err != nil {
 			return nil, err
 		}
 		scanRunExtras(&r, pid, endedAt, exitCode)
@@ -126,9 +133,9 @@ func (s *Store) ActiveRunForTask(taskID int64) (*Run, error) {
 	var pid, exitCode sql.NullInt64
 	var endedAt sql.NullString
 	err := s.db.QueryRow(
-		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message, wait
+		`SELECT id, task_id, agent, pid, status, started_at, ended_at, exit_code, message, message_source, wait
 		 FROM runs WHERE task_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1`, taskID,
-	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message, &r.Wait)
+	).Scan(&r.ID, &r.TaskID, &r.Agent, &pid, &r.Status, &r.StartedAt, &endedAt, &exitCode, &r.Message, &r.MessageSource, &r.Wait)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -157,7 +164,7 @@ func (s *Store) SetRunWait(taskID int64, wait string) (*Run, error) {
 	switch wait {
 	case "", "ci":
 	default:
-		return nil, fmt.Errorf("invalid run wait %q", wait)
+		return nil, Invalidf("invalid run wait %q", wait)
 	}
 	run, err := s.ActiveRunForTask(taskID)
 	if err != nil {
@@ -174,16 +181,54 @@ func (s *Store) SetRunWait(taskID int64, wait string) (*Run, error) {
 	return s.GetRun(run.ID)
 }
 
-// SetRunMessage updates the live progress text on a run (while running or after).
-func (s *Store) SetRunMessage(id int64, message string) error {
-	_, err := s.db.Exec(`UPDATE runs SET message = ? WHERE id = ?`, message, id)
-	return err
+// SetRunPID updates runs.pid after the agent process has started.
+func (s *Store) SetRunPID(runID int64, pid int) error {
+	res, err := s.db.Exec(`UPDATE runs SET pid = ? WHERE id = ?`, pid, runID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
-// ReportRunProgress sets the run message and emits a run_progress event for the UI.
-func (s *Store) ReportRunProgress(runID, taskID int64, message string) error {
-	if err := s.SetRunMessage(runID, message); err != nil {
+// SetRunMessage updates the live progress text and its provenance.
+// When source is MessageSourceStdout, the update is atomic and a no-op if the
+// current message was sourced from add_note (avoids clobbering across processes).
+func (s *Store) SetRunMessage(id int64, message, source string) (updated bool, err error) {
+	var res sql.Result
+	if source == MessageSourceStdout {
+		res, err = s.db.Exec(
+			`UPDATE runs SET message = ?, message_source = ? WHERE id = ? AND message_source IN ('', ?)`,
+			message, MessageSourceStdout, id, MessageSourceStdout,
+		)
+	} else {
+		res, err = s.db.Exec(
+			`UPDATE runs SET message = ?, message_source = ? WHERE id = ?`,
+			message, source, id,
+		)
+	}
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// ReportRunProgress sets the run message from source and emits a run_progress
+// event when the row actually changed (stdout skips note-sourced messages).
+func (s *Store) ReportRunProgress(runID, taskID int64, message, source string) error {
+	updated, err := s.SetRunMessage(runID, message, source)
+	if err != nil {
 		return err
+	}
+	if !updated {
+		return nil
 	}
 	s.emit(&taskID, "run_progress", truncate(message, 80))
 	return nil
@@ -193,7 +238,7 @@ func (s *Store) FinishRun(id int64, status string, exitCode *int, message string
 	switch status {
 	case "exited", "failed", "killed":
 	default:
-		return nil, fmt.Errorf("invalid run status %q", status)
+		return nil, Invalidf("invalid run status %q", status)
 	}
 	r, err := s.GetRun(id)
 	if err != nil {
@@ -204,14 +249,19 @@ func (s *Store) FinishRun(id int64, status string, exitCode *int, message string
 	}
 	ts := now()
 	_, err = s.db.Exec(
-		`UPDATE runs SET status = ?, ended_at = ?, exit_code = ?, message = ?, wait = '' WHERE id = ?`,
+		`UPDATE runs SET status = ?, ended_at = ?, exit_code = ?, message = ?, wait = '', message_source = '' WHERE id = ?`,
 		status, ts, exitCode, message, id,
 	)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.CancelPendingQuestions(r.TaskID); err != nil {
-		return nil, err
+	// Only cancel asks when the human kills the run. On exit/fail (including
+	// ask_user MCP cancel → agent STOP), leave pending questions answerable so
+	// the human can reply and re-run.
+	if status == "killed" {
+		if _, err := s.CancelPendingQuestions(r.TaskID); err != nil {
+			return nil, err
+		}
 	}
 	detail := status
 	if message != "" {

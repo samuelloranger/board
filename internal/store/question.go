@@ -23,7 +23,7 @@ var ErrQuestionClosed = errors.New("question is not pending")
 
 func (s *Store) CreateQuestion(taskID int64, question string) (*Question, error) {
 	if question == "" {
-		return nil, errors.New("question is required")
+		return nil, Invalid("question is required")
 	}
 	if _, err := s.GetTask(taskID); err != nil {
 		return nil, err

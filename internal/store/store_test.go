@@ -27,6 +27,13 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if n != 3 {
 		t.Fatalf("expected 3 tables, got %d", n)
 	}
+	ver, err := userVersion(st.db)
+	if err != nil {
+		t.Fatalf("user_version: %v", err)
+	}
+	if ver != schemaVersion {
+		t.Fatalf("user_version: want %d, got %d", schemaVersion, ver)
+	}
 }
 
 func TestValidators(t *testing.T) {

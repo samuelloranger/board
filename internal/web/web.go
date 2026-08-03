@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/samuelloranger/board/internal/agent"
 	"github.com/samuelloranger/board/internal/store"
@@ -29,6 +29,13 @@ type Config struct {
 	Runner agent.Runner
 	// Runners optionally overrides individual agents when Runner is nil.
 	Runners map[string]agent.Runner
+	// CSRFToken, if set, is the per-process mutation token (tests). Otherwise random.
+	CSRFToken string
+	// AllowedHosts are extra Host header values accepted beyond loopback.
+	// Needed only when binding a non-loopback --addr. Bare host or host:port.
+	// "*" disables the Host check entirely (an unspecified bind like 0.0.0.0
+	// can be reached under any name, so there is nothing to match against).
+	AllowedHosts []string
 }
 
 // procEntry holds a kill func for an in-flight agent process.
@@ -44,10 +51,15 @@ func Handler(st *store.Store) http.Handler {
 // HandlerConfig serves the JSON API and embedded UI.
 func HandlerConfig(cfg Config) http.Handler {
 	st := cfg.Store
+	csrf := cfg.CSRFToken
+	if csrf == "" {
+		csrf = newCSRFToken()
+	}
 
 	var (
 		mu    sync.Mutex
 		procs = map[int64]procEntry{}
+		hub   = newEventHub(st)
 	)
 
 	resolveRunner := func(name string) (agent.Runner, error) {
@@ -64,20 +76,19 @@ func HandlerConfig(cfg Config) http.Handler {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/board", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/board", func(w http.ResponseWriter, r *http.Request) {
 		var proj *string
 		if p := r.URL.Query().Get("project"); p != "" && p != "*" {
 			proj = &p
 		}
 		b, err := st.GetBoard(proj)
+		if err == nil {
+			_ = st.AttachRecentAgentNotes(b, 3)
+		}
 		writeJSON(w, b, err)
 	})
 
-	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST only", http.StatusMethodNotAllowed)
-			return
-		}
+	mux.HandleFunc("POST /api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Title, Description, Status, Project, Priority, DueDate string
 			Tags                                                   []string
@@ -94,99 +105,125 @@ func HandlerConfig(cfg Config) http.Handler {
 		writeJSON(w, tk, err)
 	})
 
-	mux.HandleFunc("/api/tasks/", func(w http.ResponseWriter, r *http.Request) {
-		trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/tasks/"), "/")
-		parts := strings.Split(trimmed, "/")
-		if len(parts) < 1 || len(parts) > 3 || parts[0] == "" {
-			http.NotFound(w, r)
+	mux.HandleFunc("GET /api/tasks/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
 			return
 		}
-		id, err := strconv.ParseInt(parts[0], 10, 64)
-		if err != nil {
-			http.Error(w, "bad id", http.StatusBadRequest)
+		tk, err := st.GetTask(id)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		if len(parts) == 1 {
-			if r.Method != http.MethodGet {
-				http.Error(w, "GET only", http.StatusMethodNotAllowed)
-				return
-			}
-			tk, err := st.GetTask(id)
-			if errors.Is(err, store.ErrNotFound) {
-				http.Error(w, err.Error(), http.StatusNotFound)
-				return
-			}
-			writeJSON(w, tk, err)
-			return
-		}
-		action := parts[1]
-		if len(parts) == 3 {
-			action = parts[1] + "/" + parts[2]
-		}
-		switch action {
-		case "move":
-			var body struct{ Status string }
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, "invalid JSON body", http.StatusBadRequest)
-				return
-			}
-			tk, err := st.MoveTask(id, body.Status)
-			writeJSON(w, tk, err)
-		case "archive":
-			tk, err := st.SetArchived(id, true)
-			writeJSON(w, tk, err)
-		case "update":
-			var body struct {
-				Title       *string   `json:"title"`
-				Description *string   `json:"description"`
-				Priority    *string   `json:"priority"`
-				DueDate     *string   `json:"due_date"`
-				Project     *string   `json:"project"`
-				Tags        *[]string `json:"tags"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, "invalid JSON body", http.StatusBadRequest)
-				return
-			}
-			tk, err := st.UpdateTask(id, store.UpdateTaskParams{
-				Title: body.Title, Description: body.Description,
-				Priority: body.Priority, DueDate: body.DueDate,
-				Project: body.Project, Tags: body.Tags,
-			})
-			writeJSON(w, tk, err)
-		case "note":
-			var body struct {
-				Body string `json:"body"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, "invalid JSON body", http.StatusBadRequest)
-				return
-			}
-			n, err := st.AddNote(id, body.Body, "human")
-			writeJSON(w, n, err)
-		case "handoff":
-			var body struct {
-				To, Reason string
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, "invalid JSON body", http.StatusBadRequest)
-				return
-			}
-			tk, err := st.Handoff(id, body.To, body.Reason)
-			writeJSON(w, tk, err)
-		case "clear_handoff":
-			tk, err := st.ClearHandoff(id)
-			writeJSON(w, tk, err)
-		case "run":
-			handleRun(w, r, st, resolveRunner, id, &mu, procs)
-		case "run/cancel":
-			handleRunCancel(w, r, st, id, &mu, procs)
-		default:
-			http.NotFound(w, r)
-		}
+		writeJSON(w, tk, err)
 	})
 
-	mux.HandleFunc("/api/resume", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/tasks/{id}/move", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		var body struct{ Status string }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		tk, err := st.MoveTask(id, body.Status)
+		writeJSON(w, tk, err)
+	})
+
+	mux.HandleFunc("POST /api/tasks/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		tk, err := st.SetArchived(id, true)
+		writeJSON(w, tk, err)
+	})
+
+	mux.HandleFunc("POST /api/tasks/{id}/update", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Title       *string   `json:"title"`
+			Description *string   `json:"description"`
+			Priority    *string   `json:"priority"`
+			DueDate     *string   `json:"due_date"`
+			Project     *string   `json:"project"`
+			Tags        *[]string `json:"tags"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		tk, err := st.UpdateTask(id, store.UpdateTaskParams{
+			Title: body.Title, Description: body.Description,
+			Priority: body.Priority, DueDate: body.DueDate,
+			Project: body.Project, Tags: body.Tags,
+		})
+		writeJSON(w, tk, err)
+	})
+
+	mux.HandleFunc("POST /api/tasks/{id}/note", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Body string `json:"body"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		n, err := st.AddNote(id, body.Body, "human")
+		writeJSON(w, n, err)
+	})
+
+	mux.HandleFunc("POST /api/tasks/{id}/handoff", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			To, Reason string
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		tk, err := st.Handoff(id, body.To, body.Reason)
+		writeJSON(w, tk, err)
+	})
+
+	mux.HandleFunc("POST /api/tasks/{id}/clear_handoff", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		tk, err := st.ClearHandoff(id)
+		writeJSON(w, tk, err)
+	})
+
+	mux.HandleFunc("POST /api/tasks/{id}/run", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		handleRun(w, r, st, resolveRunner, id, &mu, procs)
+	})
+
+	mux.HandleFunc("POST /api/tasks/{id}/run/cancel", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		handleRunCancel(w, r, st, id, &mu, procs)
+	})
+
+	mux.HandleFunc("GET /api/resume", func(w http.ResponseWriter, r *http.Request) {
 		var proj *string
 		if p := r.URL.Query().Get("project"); p != "" && p != "*" {
 			proj = &p
@@ -195,59 +232,41 @@ func HandlerConfig(cfg Config) http.Handler {
 		writeJSON(w, res, err)
 	})
 
-	mux.HandleFunc("/api/projects/paths", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "GET only", http.StatusMethodNotAllowed)
-			return
-		}
+	mux.HandleFunc("GET /api/projects/paths", func(w http.ResponseWriter, r *http.Request) {
 		list, err := st.ListProjectPaths()
 		writeJSON(w, list, err)
 	})
 
-	mux.HandleFunc("/api/projects/", func(w http.ResponseWriter, r *http.Request) {
-		trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/projects/"), "/")
-		parts := strings.Split(trimmed, "/")
-		if len(parts) != 2 || parts[1] != "path" {
-			http.NotFound(w, r)
+	mux.HandleFunc("PUT /api/projects/{name}/path", func(w http.ResponseWriter, r *http.Request) {
+		name := projectPathName(r)
+		var body struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 			return
 		}
-		name := parts[0]
-		if name == "" || name == "*" {
-			name = store.GlobalProjectKey
+		abs := store.ExpandUserPath(body.Path)
+		fi, err := os.Stat(abs)
+		if err != nil || !fi.IsDir() {
+			http.Error(w, "path must be an existing directory", http.StatusBadRequest)
+			return
 		}
-		switch r.Method {
-		case http.MethodPut:
-			var body struct {
-				Path string `json:"path"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, "invalid JSON body", http.StatusBadRequest)
-				return
-			}
-			fi, err := os.Stat(body.Path)
-			if err != nil || !fi.IsDir() {
-				http.Error(w, "path must be an existing directory", http.StatusBadRequest)
-				return
-			}
-			pp, err := st.SetProjectPath(name, body.Path)
-			writeJSON(w, pp, err)
-		case http.MethodDelete:
-			err := st.DeleteProjectPath(name)
-			if errors.Is(err, store.ErrNotFound) {
-				http.Error(w, err.Error(), http.StatusNotFound)
-				return
-			}
-			writeJSON(w, map[string]any{"ok": true}, err)
-		default:
-			http.Error(w, "PUT or DELETE only", http.StatusMethodNotAllowed)
-		}
+		pp, err := st.SetProjectPath(name, abs)
+		writeJSON(w, pp, err)
 	})
 
-	mux.HandleFunc("/api/questions", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+	mux.HandleFunc("DELETE /api/projects/{name}/path", func(w http.ResponseWriter, r *http.Request) {
+		name := projectPathName(r)
+		err := st.DeleteProjectPath(name)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
+		writeJSON(w, map[string]any{"ok": true}, err)
+	})
+
+	mux.HandleFunc("GET /api/questions", func(w http.ResponseWriter, r *http.Request) {
 		var taskID *int64
 		if s := r.URL.Query().Get("task_id"); s != "" {
 			id, err := strconv.ParseInt(s, 10, 64)
@@ -262,16 +281,9 @@ func HandlerConfig(cfg Config) http.Handler {
 		writeJSON(w, list, err)
 	})
 
-	mux.HandleFunc("/api/questions/", func(w http.ResponseWriter, r *http.Request) {
-		trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/questions/"), "/")
-		parts := strings.Split(trimmed, "/")
-		if len(parts) != 2 || parts[1] != "answer" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		id, err := strconv.ParseInt(parts[0], 10, 64)
-		if err != nil {
-			http.Error(w, "bad id", http.StatusBadRequest)
+	mux.HandleFunc("POST /api/questions/{id}/answer", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
 			return
 		}
 		var body struct {
@@ -289,11 +301,7 @@ func HandlerConfig(cfg Config) http.Handler {
 		writeJSON(w, q, err)
 	})
 
-	mux.HandleFunc("/api/runs", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "GET only", http.StatusMethodNotAllowed)
-			return
-		}
+	mux.HandleFunc("GET /api/runs", func(w http.ResponseWriter, r *http.Request) {
 		var taskID *int64
 		if s := r.URL.Query().Get("task_id"); s != "" {
 			id, err := strconv.ParseInt(s, 10, 64)
@@ -308,15 +316,59 @@ func HandlerConfig(cfg Config) http.Handler {
 		writeJSON(w, list, err)
 	})
 
-	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/runs/{id}/files", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		files, err := st.ListRunFiles(id)
+		writeJSON(w, files, err)
+	})
+
+	mux.HandleFunc("POST /api/runs/{id}/files", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if err := st.AddRunFile(id, body.Path); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true}, nil)
+	})
+
+	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
 		}
+		ch, unsub, ok := hub.subscribe()
+		if !ok {
+			http.Error(w, "too many event streams", http.StatusServiceUnavailable)
+			return
+		}
+		defer unsub()
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
+
+		writeEvent := func(e store.Event) {
+			b, _ := json.Marshal(e)
+			fmt.Fprintf(w, "data: %s\n\n", b)
+		}
 
 		// No explicit `since` means a fresh page load: seed with a short tail of
 		// recent activity instead of replaying the whole events table.
@@ -329,52 +381,100 @@ func HandlerConfig(cfg Config) http.Handler {
 		if since < 0 {
 			if evs, err := st.RecentEvents(30); err == nil {
 				for _, e := range evs {
-					b, _ := json.Marshal(e)
-					fmt.Fprintf(w, "data: %s\n\n", b)
+					writeEvent(e)
 					since = e.ID
 				}
 			}
 			if since < 0 {
 				since = 0
 			}
-		}
-		send := func() {
-			evs, err := st.Events(since, 200)
-			if err != nil {
-				return
-			}
+		} else if evs, err := st.Events(since, 200); err == nil {
 			for _, e := range evs {
-				b, _ := json.Marshal(e)
-				fmt.Fprintf(w, "data: %s\n\n", b)
+				writeEvent(e)
 				since = e.ID
 			}
-			flusher.Flush()
 		}
-		send()
+		// Close the subscribe race: events may have landed between catch-up
+		// and joining the hub broadcast.
+		if evs, err := st.Events(since, 200); err == nil {
+			for _, e := range evs {
+				writeEvent(e)
+				since = e.ID
+			}
+		}
 		fmt.Fprint(w, "event: synced\ndata: {}\n\n")
 		flusher.Flush()
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
+
 		for {
 			select {
 			case <-r.Context().Done():
 				return
-			case <-ticker.C:
-				send()
+			case batch, open := <-ch:
+				if !open {
+					return
+				}
+				for _, e := range batch {
+					if e.ID <= since {
+						continue
+					}
+					writeEvent(e)
+					since = e.ID
+				}
+				flusher.Flush()
 			}
 		}
 	})
 
 	dist, _ := fs.Sub(uiFS, "ui/dist")
+	indexHTML := injectCSRF(mustReadFile(dist, "index.html"), csrf)
 	mux.Handle("/", http.FileServer(http.FS(dist)))
-	return mux
+
+	allowedHosts := allowedHostSet(cfg.AllowedHosts)
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Host is checked on every request, including GETs: serving the CSRF
+		// token in index.html to a rebound attacker origin is the leak.
+		if err := checkHost(r, allowedHosts); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if isMutating(r.Method) && strings.HasPrefix(r.URL.Path, "/api/") {
+			if err := checkMutation(r, csrf); err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+		}
+		if r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/index.html") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write(indexHTML)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func mustReadFile(fsys fs.FS, name string) []byte {
+	b, err := fs.ReadFile(fsys, name)
+	if err != nil {
+		panic("web: read " + name + ": " + err.Error())
+	}
+	return b
+}
+
+func injectCSRF(html []byte, token string) []byte {
+	snippet := []byte(`<script>window.__BOARD_CSRF__=` + strconv.Quote(token) + `;</script>`)
+	if i := bytes.Index(html, []byte("</head>")); i >= 0 {
+		out := make([]byte, 0, len(html)+len(snippet))
+		out = append(out, html[:i]...)
+		out = append(out, snippet...)
+		out = append(out, html[i:]...)
+		return out
+	}
+	return append(snippet, html...)
 }
 
 func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, resolveRunner func(string) (agent.Runner, error), taskID int64, mu *sync.Mutex, procs map[int64]procEntry) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
 	var body struct {
 		Agent string `json:"agent"`
 	}
@@ -399,7 +499,7 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, resolveR
 	if tk.Project != nil && *tk.Project != "" {
 		projKey = *tk.Project
 	}
-	pp, err := st.GetProjectPath(projKey)
+	cwd, err := st.ResolveProjectPath(projKey)
 	if errors.Is(err, store.ErrNotFound) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -410,48 +510,50 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, resolveR
 		writeJSON(w, nil, err)
 		return
 	}
-	var (
-		runID      atomic.Int64
-		lastStdout atomic.Value // string
-	)
-	lastStdout.Store("")
-	started, err := runner.Start(agent.StartOpts{
-		Cwd:    pp.Path,
-		Prompt: agent.BuildPrompt(tk),
-		OnProgress: func(output string) {
-			id := runID.Load()
-			if id == 0 || output == "" {
-				return
-			}
-			// Don't clobber a human-readable note the agent posted via add_note.
-			if run, err := st.GetRun(id); err == nil {
-				prev, _ := lastStdout.Load().(string)
-				if run.Message != "" && run.Message != prev {
-					return
-				}
-			}
-			lastStdout.Store(output)
-			_ = st.ReportRunProgress(id, taskID, output)
-		},
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	run, err := st.CreateRun(taskID, body.Agent, started.PID)
+	var runID atomic.Int64
+	run, err := st.CreateRun(taskID, body.Agent, 0)
 	if errors.Is(err, store.ErrRunActive) {
-		_ = started.Kill()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
 		return
 	}
 	if err != nil {
-		_ = started.Kill()
 		writeJSON(w, nil, err)
 		return
 	}
 	runID.Store(run.ID)
+	env := append(os.Environ(),
+		fmt.Sprintf("BOARD_TASK_ID=%d", taskID),
+		fmt.Sprintf("BOARD_RUN_ID=%d", run.ID),
+	)
+	started, err := runner.Start(agent.StartOpts{
+		Cwd:    cwd,
+		Prompt: agent.BuildPrompt(tk),
+		Env:    env,
+		OnProgress: func(output string) {
+			id := runID.Load()
+			if id == 0 || output == "" {
+				return
+			}
+			// Store only overwrites when message_source is empty/stdout —
+			// never clobbers an add_note-sourced message (atomic in SQL).
+			_ = st.ReportRunProgress(id, taskID, output, store.MessageSourceStdout)
+		},
+	})
+	if err != nil {
+		code := -1
+		_, _ = st.FinishRun(run.ID, "failed", &code, err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := st.SetRunPID(run.ID, started.PID); err != nil {
+		_ = started.Kill()
+		code := -1
+		_, _ = st.FinishRun(run.ID, "failed", &code, err.Error())
+		writeJSON(w, nil, err)
+		return
+	}
 	mu.Lock()
 	procs[run.ID] = procEntry{kill: started.Kill}
 	mu.Unlock()
@@ -476,10 +578,6 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, resolveR
 }
 
 func handleRunCancel(w http.ResponseWriter, r *http.Request, st *store.Store, taskID int64, mu *sync.Mutex, procs map[int64]procEntry) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
 	run, err := st.ActiveRunForTask(taskID)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no active run", http.StatusBadRequest)
@@ -506,6 +604,23 @@ func handleRunCancel(w http.ResponseWriter, r *http.Request, st *store.Store, ta
 	writeJSON(w, finished, err)
 }
 
+func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return 0, false
+	}
+	return id, true
+}
+
+func projectPathName(r *http.Request) string {
+	name := r.PathValue("name")
+	if name == "" || name == "*" {
+		return store.GlobalProjectKey
+	}
+	return name
+}
+
 func ptrIfSet(s string) *string {
 	if s == "" {
 		return nil
@@ -515,9 +630,25 @@ func ptrIfSet(s string) *string {
 
 func writeJSON(w http.ResponseWriter, v any, err error) {
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), statusFor(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+func statusFor(err error) int {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return http.StatusNotFound
+	case isValidation(err):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func isValidation(err error) bool {
+	var ve *store.ValidationError
+	return errors.As(err, &ve)
 }

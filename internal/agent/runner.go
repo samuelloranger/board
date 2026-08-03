@@ -21,6 +21,9 @@ type StartOpts struct {
 	Prompt string
 	// OnProgress is called with the trimmed output so far (throttled). Optional.
 	OnProgress func(output string)
+	// Env is the child process environment. nil means inherit the default
+	// (os.Environ, possibly filtered by the Runner).
+	Env []string
 }
 
 // StartResult is a running agent process handle.
@@ -203,24 +206,30 @@ func startCLI(binName, missingHint string, args []string, opts StartOpts, env []
 
 func (CursorRunner) Start(opts StartOpts) (*StartResult, error) {
 	return startCLI("cursor-agent", "cursor-agent not found on PATH — install Cursor Agent CLI",
-		cursorArgs(opts.Prompt), opts, nil)
+		cursorArgs(opts.Prompt), opts, opts.Env)
 }
 
 func (ClaudeRunner) Start(opts StartOpts) (*StartResult, error) {
 	// Strip API key so Claude Code falls back to subscription OAuth credentials.
-	env := withoutEnvKeys(os.Environ(), "ANTHROPIC_API_KEY")
+	env := opts.Env
+	if env == nil {
+		env = withoutEnvKeys(os.Environ(), "ANTHROPIC_API_KEY")
+	} else {
+		env = withoutEnvKeys(env, "ANTHROPIC_API_KEY")
+	}
 	return startCLI("claude", "claude not found on PATH — install Claude Code CLI",
 		claudeArgs(opts.Prompt), opts, env)
 }
 
 func (CodexRunner) Start(opts StartOpts) (*StartResult, error) {
 	return startCLI("codex", "codex not found on PATH — install OpenAI Codex CLI",
-		codexArgs(opts.Prompt), opts, nil)
+		codexArgs(opts.Prompt), opts, opts.Env)
 }
 
 // FakeRunner records Start args for tests.
 type FakeRunner struct {
 	LastCwd, LastPrompt string
+	LastEnv             []string
 	StartErr            error
 	ExitCode            int
 	Output              string
@@ -228,7 +237,7 @@ type FakeRunner struct {
 }
 
 func (f *FakeRunner) Start(opts StartOpts) (*StartResult, error) {
-	f.LastCwd, f.LastPrompt = opts.Cwd, opts.Prompt
+	f.LastCwd, f.LastPrompt, f.LastEnv = opts.Cwd, opts.Prompt, opts.Env
 	if f.StartErr != nil {
 		return nil, f.StartErr
 	}

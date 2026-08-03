@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"sort"
 	"time"
 )
@@ -22,16 +21,16 @@ type CreateTaskParams struct {
 
 func (s *Store) CreateTask(p CreateTaskParams) (*Task, error) {
 	if p.Title == "" {
-		return nil, errors.New("title is required")
+		return nil, Invalid("title is required")
 	}
 	if p.Status == "" {
 		p.Status = "todo"
 	}
 	if !validStatus(p.Status) {
-		return nil, fmt.Errorf("invalid status %q", p.Status)
+		return nil, Invalidf("invalid status %q", p.Status)
 	}
 	if p.Priority != nil && !validPriority(*p.Priority) {
-		return nil, fmt.Errorf("invalid priority %q", *p.Priority)
+		return nil, Invalidf("invalid priority %q", *p.Priority)
 	}
 	ts := now()
 	tx, err := s.db.Begin()
@@ -215,7 +214,7 @@ func (s *Store) UpdateTask(id int64, p UpdateTaskParams) (*Task, error) {
 		return nil, err
 	}
 	if p.Priority != nil && *p.Priority != "" && !validPriority(*p.Priority) {
-		return nil, fmt.Errorf("invalid priority %q", *p.Priority)
+		return nil, Invalidf("invalid priority %q", *p.Priority)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -289,7 +288,7 @@ func joinComma(parts []string) string {
 
 func (s *Store) MoveTask(id int64, status string) (*Task, error) {
 	if !validStatus(status) {
-		return nil, fmt.Errorf("invalid status %q", status)
+		return nil, Invalidf("invalid status %q", status)
 	}
 	var current string
 	err := s.db.QueryRow(`SELECT status FROM tasks WHERE id = ?`, id).Scan(&current)

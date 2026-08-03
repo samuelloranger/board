@@ -1,10 +1,8 @@
 package store
 
-import "errors"
-
 func (s *Store) Handoff(id int64, to, reason string) (*Task, error) {
 	if to == "" {
-		return nil, errors.New("handoff target (to) is required")
+		return nil, Invalid("handoff target (to) is required")
 	}
 	res, err := s.db.Exec(
 		`UPDATE tasks SET handoff_to = ?, handoff_reason = ?, updated_at = ? WHERE id = ?`,

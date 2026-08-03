@@ -22,6 +22,7 @@ dependency — the store is the only shared state, and all three can run at once
 - `internal/store/` — SQLite data layer. `store.go` (schema/Open), `task.go`, `note.go`, `board.go`,
   `handoff.go`, `event.go` (activity feed), `project.go` (git-root project detection),
   `project_path.go` / `question.go` / `run.go` (FE agent Run + ask_user bridge).
+  Project paths store as home-relative (`~/…`); `run_files` store project-root-relative.
 - `internal/agent/` — provenance prompt + `CursorRunner` for spawning `cursor-agent`.
 - `internal/mcpserver/` — `BuildServer(st, defaultProject)`, the MCP tool surface.
 - `internal/web/` — `web.go` HTTP handlers + `//go:embed all:ui/dist`; `ui/` is the Svelte 5 + Vite app.
@@ -117,6 +118,12 @@ racing them into `SQLITE_BUSY`. Don't raise it.
   mutation. `LogEvent` (from `board event`) does return errors.
 - The web API has **no auth and binds loopback by default**. `--addr 0.0.0.0` exposes an unauthenticated
   read/write board to the LAN. Keep it loopback.
+- Two checks in `internal/web/csrf.go` keep a browser from driving that unauthenticated API. `checkMutation`
+  requires the `X-CSRF-Token` injected into `index.html` and rejects cross-site `Origin`/`Sec-Fetch-Site`.
+  `checkHost` runs on **every** request, including GETs, and refuses non-loopback `Host` headers — without
+  it, DNS rebinding onto the board's port arrives with `Origin == Host`, passes the mutation check, and the
+  page can read the token straight out of the served HTML. `Config.AllowedHosts` widens it; `board serve`
+  passes the `--addr` host, or `"*"` (check disabled) when the bind is unspecified like `0.0.0.0`.
 - The plugin hooks shell out to a `board` binary on `PATH` and parse hook JSON with `sed`, not `jq`, to
   avoid the dependency. They exit 0 unconditionally so a missing binary never breaks a Claude session.
 - `dist_release/`, `board`, and `*.db*` are gitignored.

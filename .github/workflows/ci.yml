@@ -30,6 +30,18 @@ jobs:
       - name: Install web dependencies
         working-directory: internal/web/ui
         run: bun install --frozen-lockfile
+      - name: Test web UI
+        working-directory: internal/web/ui
+        run: bun run test
       - name: Build web UI
         working-directory: internal/web/ui
         run: bun run build
+      # emptyOutDir + content hashes rewrite asset names, so stage first —
+      # plain git diff misses untracked new hashed files.
+      - name: Check committed UI dist is current
+        run: |
+          git add internal/web/ui/dist
+          if ! git diff --cached --exit-code -- internal/web/ui/dist; then
+            echo "::error::Committed internal/web/ui/dist is stale vs ui/src. Run: (cd internal/web/ui && bun install && bun run build) and commit dist/."
+            exit 1
+          fi

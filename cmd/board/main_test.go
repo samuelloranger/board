@@ -41,3 +41,21 @@ func TestCLIEvent(t *testing.T) {
 		t.Fatalf("event: %v", err)
 	}
 }
+
+func TestAllowedHostFor(t *testing.T) {
+	cases := map[string]string{
+		"127.0.0.1:7420":   "127.0.0.1",
+		"localhost:7420":   "localhost",
+		"192.168.1.5:9000": "192.168.1.5",
+		// Unspecified binds are reachable under any name, so there is nothing
+		// to pin the Host header to.
+		"0.0.0.0:9000": "*",
+		"[::]:9000":    "*",
+		":7420":        "*",
+	}
+	for addr, want := range cases {
+		if got := allowedHostFor(addr); got != want {
+			t.Errorf("allowedHostFor(%q) = %q, want %q", addr, got, want)
+		}
+	}
+}

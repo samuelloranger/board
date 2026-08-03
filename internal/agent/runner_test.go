@@ -9,9 +9,12 @@ import (
 
 func TestFakeRunnerRecordsPrompt(t *testing.T) {
 	f := &FakeRunner{ExitCode: 0, Output: "hello out"}
-	res, err := f.Start(StartOpts{Cwd: "/tmp/x", Prompt: "hello"})
+	res, err := f.Start(StartOpts{Cwd: "/tmp/x", Prompt: "hello", Env: []string{"BOARD_RUN_ID=9"}})
 	if err != nil || f.LastCwd != "/tmp/x" || f.LastPrompt != "hello" || res.PID != 4242 {
 		t.Fatalf("%v %+v %+v", err, f, res)
+	}
+	if len(f.LastEnv) != 1 || f.LastEnv[0] != "BOARD_RUN_ID=9" {
+		t.Fatalf("LastEnv=%v", f.LastEnv)
 	}
 	code, out, err := res.Wait()
 	if err != nil || code != 0 || out != "hello out" {
