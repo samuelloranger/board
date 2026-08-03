@@ -173,6 +173,10 @@ func TestMigratePathsOnOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Rewind past the path-rewrite step so the next Open re-runs v8 once.
+	if err := setUserVersion(st1.db, 7); err != nil {
+		t.Fatal(err)
+	}
 	st1.Close()
 
 	st2, err := Open(dbPath)

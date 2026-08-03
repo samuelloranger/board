@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -288,7 +289,30 @@ func runServe(args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "reconciled %d orphan agent run(s)\n", n)
 	}
 	fmt.Fprintf(stdout, "board web UI: http://%s\n", addr)
-	return http.ListenAndServe(addr, web.Handler(st))
+	// A non-loopback --addr is an explicit choice to serve that host, so accept
+	// it as a Host header too; loopback is always allowed. An unspecified bind
+	// (0.0.0.0 / ::) can be reached under any name, so the Host check is off.
+	return http.ListenAndServe(addr, web.HandlerConfig(web.Config{
+		Store:        st,
+		AllowedHosts: []string{allowedHostFor(addr)},
+	}))
+}
+
+// allowedHostFor maps a listen address to the extra Host header to accept:
+// the bound host, or "*" when the bind is unspecified and any name may reach it.
+func allowedHostFor(addr string) string {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return "*"
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return "*"
+	}
+	return host
 }
 
 func runSetup(args []string, stdout io.Writer) error {

@@ -21,7 +21,7 @@ func TestCreateRunRejectsSecond(t *testing.T) {
 	}
 }
 
-func TestFinishRunCancelsQuestions(t *testing.T) {
+func TestFinishRunCancelsQuestionsOnlyWhenKilled(t *testing.T) {
 	st := newTestStore(t)
 	tk, _ := st.CreateTask(CreateTaskParams{Title: "t"})
 	r, _ := st.CreateRun(tk.ID, "cursor", 1)
@@ -31,12 +31,23 @@ func TestFinishRunCancelsQuestions(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := st.GetQuestion(q.ID)
-	if got.Status != "cancelled" {
-		t.Fatalf("%+v", got)
+	if got.Status != "pending" {
+		t.Fatalf("failed run should leave ask pending, got %+v", got)
 	}
 	fin, _ := st.GetRun(r.ID)
 	if fin.Message != "boom" || fin.Status != "failed" {
 		t.Fatalf("finish: %+v", fin)
+	}
+
+	tk2, _ := st.CreateTask(CreateTaskParams{Title: "t2"})
+	r2, _ := st.CreateRun(tk2.ID, "cursor", 2)
+	q2, _ := st.CreateQuestion(tk2.ID, "q2?")
+	if _, err := st.FinishRun(r2.ID, "killed", nil, "cancelled from board UI"); err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := st.GetQuestion(q2.ID)
+	if got2.Status != "cancelled" {
+		t.Fatalf("killed run should cancel ask, got %+v", got2)
 	}
 }
 
@@ -79,5 +90,57 @@ func TestSetRunWait(t *testing.T) {
 	}
 	if _, err := st.SetRunWait(tk.ID, "ci"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("no active run: %v", err)
+	}
+}
+
+func TestReportRunProgressStdoutDoesNotClobberNote(t *testing.T) {
+	st := newTestStore(t)
+	tk, _ := st.CreateTask(CreateTaskParams{Title: "t"})
+	run, err := st.CreateRun(tk.ID, "cursor", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReportRunProgress(run.ID, tk.ID, "stdout-1", MessageSourceStdout); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetRun(run.ID)
+	if got.Message != "stdout-1" || got.MessageSource != MessageSourceStdout {
+		t.Fatalf("after stdout: %+v", got)
+	}
+	if err := st.ReportRunProgress(run.ID, tk.ID, "agent note", MessageSourceNote); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetRun(run.ID)
+	if got.Message != "agent note" || got.MessageSource != MessageSourceNote {
+		t.Fatalf("after note: %+v", got)
+	}
+	if err := st.ReportRunProgress(run.ID, tk.ID, "stdout-2", MessageSourceStdout); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetRun(run.ID)
+	if got.Message != "agent note" || got.MessageSource != MessageSourceNote {
+		t.Fatalf("stdout must not clobber note: %+v", got)
+	}
+	// Matching text still must not overwrite — provenance, not string equality.
+	if err := st.ReportRunProgress(run.ID, tk.ID, "agent note", MessageSourceStdout); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetRun(run.ID)
+	if got.MessageSource != MessageSourceNote {
+		t.Fatalf("stdout matching note text must not flip source: %+v", got)
+	}
+}
+
+func TestAddNoteMirrorsWithNoteSource(t *testing.T) {
+	st := newTestStore(t)
+	tk, _ := st.CreateTask(CreateTaskParams{Title: "t"})
+	run, _ := st.CreateRun(tk.ID, "cursor", 1)
+	_, err := st.AddNote(tk.ID, "live progress", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetRun(run.ID)
+	if got.Message != "live progress" || got.MessageSource != MessageSourceNote {
+		t.Fatalf("%+v", got)
 	}
 }

@@ -25,7 +25,7 @@ func normalizeProjectKey(project string) string {
 
 func (s *Store) SetProjectPath(project, path string) (*ProjectPath, error) {
 	if path == "" {
-		return nil, errors.New("path is required")
+		return nil, Invalid("path is required")
 	}
 	project = normalizeProjectKey(project)
 	stored := RelativizeToHome(ExpandUserPath(path))

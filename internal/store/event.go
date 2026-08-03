@@ -1,6 +1,6 @@
 package store
 
-import "errors"
+import "database/sql"
 
 type Event struct {
 	ID        int64  `json:"id"`
@@ -12,10 +12,54 @@ type Event struct {
 
 // emit is best-effort: activity logging must never fail a real mutation.
 func (s *Store) emit(taskID *int64, kind, detail string) {
-	_, _ = s.db.Exec(
+	_, err := s.db.Exec(
 		`INSERT INTO events (task_id, kind, detail, created_at) VALUES (?, ?, ?, ?)`,
 		taskID, kind, detail, now(),
 	)
+	if err == nil {
+		s.wakeEventListeners()
+	}
+}
+
+// wakeEventListeners closes the current EventSignal channel so waiters wake,
+// then installs a fresh one for the next writer.
+func (s *Store) wakeEventListeners() {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	if s.eventSig == nil {
+		s.eventSig = make(chan struct{})
+		return
+	}
+	select {
+	case <-s.eventSig:
+		// already closed — replace below
+	default:
+		close(s.eventSig)
+	}
+	s.eventSig = make(chan struct{})
+}
+
+// EventSignal returns a channel that closes the next time this process writes
+// an activity event. Callers should re-fetch the signal after it closes.
+func (s *Store) EventSignal() <-chan struct{} {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	if s.eventSig == nil {
+		s.eventSig = make(chan struct{})
+	}
+	return s.eventSig
+}
+
+// MaxEventID returns the highest events.id, or 0 when the table is empty.
+func (s *Store) MaxEventID() (int64, error) {
+	var id sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MAX(id) FROM events`).Scan(&id); err != nil {
+		return 0, err
+	}
+	if !id.Valid {
+		return 0, nil
+	}
+	return id.Int64, nil
 }
 
 func (s *Store) Events(sinceID int64, limit int) ([]Event, error) {
@@ -74,7 +118,7 @@ func (s *Store) RecentEvents(limit int) ([]Event, error) {
 // flooded the activity feed / events table.
 func (s *Store) LogEvent(kind, detail string) error {
 	if kind == "" {
-		return errors.New("event kind is required")
+		return Invalid("event kind is required")
 	}
 	if kind == "tool" {
 		return nil
@@ -82,5 +126,8 @@ func (s *Store) LogEvent(kind, detail string) error {
 	_, err := s.db.Exec(
 		`INSERT INTO events (task_id, kind, detail, created_at) VALUES (NULL, ?, ?, ?)`,
 		kind, detail, now())
+	if err == nil {
+		s.wakeEventListeners()
+	}
 	return err
 }

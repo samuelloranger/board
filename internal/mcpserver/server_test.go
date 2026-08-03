@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,9 +219,30 @@ func TestAskUserHelper(t *testing.T) {
 			st.AnswerQuestion(qs[0].ID, "ok")
 		}
 	}()
-	out, err := askUser(ctx, st, tk.ID, "go?")
+	out, err := askUser(ctx, st, nil, tk.ID, "go?")
 	if err != nil || out["answer"] != "ok" {
 		t.Fatalf("%v %#v", err, out)
+	}
+}
+
+func TestAskUserCancelStopsWithPending(t *testing.T) {
+	st := newStore(t)
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t"})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	_, err := askUser(ctx, st, nil, tk.ID, "still there?")
+	if err == nil {
+		t.Fatal("expected cancel error")
+	}
+	if !strings.Contains(err.Error(), "STOP") {
+		t.Fatalf("want STOP instruction, got %v", err)
+	}
+	qs, _ := st.ListQuestions(&tk.ID, "pending")
+	if len(qs) != 1 {
+		t.Fatalf("question should stay pending for later answer, got %d", len(qs))
 	}
 }
 

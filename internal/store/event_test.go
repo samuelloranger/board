@@ -35,6 +35,28 @@ func TestLogEvent(t *testing.T) {
 	}
 }
 
+func TestEventSignalWakes(t *testing.T) {
+	st := newTestStore(t)
+	sig := st.EventSignal()
+	select {
+	case <-sig:
+		t.Fatal("signal should not be closed yet")
+	default:
+	}
+	if err := st.LogEvent("session", "ping"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sig:
+	default:
+		t.Fatal("expected EventSignal to close after LogEvent")
+	}
+	id, err := st.MaxEventID()
+	if err != nil || id == 0 {
+		t.Fatalf("MaxEventID: id=%d err=%v", id, err)
+	}
+}
+
 func TestLogEventIgnoresTool(t *testing.T) {
 	st := newTestStore(t)
 	if err := st.LogEvent("tool", "Read"); err != nil {
@@ -69,6 +91,10 @@ func TestOpenPurgesToolEvents(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	// Rewind past the tool-purge step so the next Open re-runs v7 once.
+	if err := setUserVersion(st.db, 6); err != nil {
+		t.Fatal(err)
+	}
 	st.Close()
 
 	st2, err := Open(path)
@@ -82,6 +108,43 @@ func TestOpenPurgesToolEvents(t *testing.T) {
 	}
 	if len(evs) != 1 || evs[0].Kind != "session" {
 		t.Fatalf("want only session after purge, got %+v", evs)
+	}
+	ver, err := userVersion(st2.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ver != schemaVersion {
+		t.Fatalf("user_version after purge: want %d, got %d", schemaVersion, ver)
+	}
+}
+
+func TestOpenDoesNotRepurgeToolEvents(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/board.db"
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fully migrated DB: planting a tool row must survive a subsequent Open.
+	if _, err := st.db.Exec(
+		`INSERT INTO events (task_id, kind, detail, created_at) VALUES (NULL, 'tool', 'Bash', ?)`,
+		now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	st2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	evs, err := st2.Events(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Kind != "tool" {
+		t.Fatalf("tool cleanup must be one-shot, got %+v", evs)
 	}
 }
 

@@ -311,12 +311,14 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 		Name: "ask_user",
 		Description: "Ask the human a question via the board web UI and block until they answer. " +
 			"Use when this session was launched from the board UI (or you need human input mid-task). " +
-			"Pass the board task_id. Do not use terminal prompts.",
+			"Pass the board task_id. Do not use terminal prompts. " +
+			"If this tool errors or is cancelled before an answer, STOP immediately — do not continue or guess. " +
+			"The question stays pending on the board; the human can answer and re-run.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
 		TaskID   int64  `json:"task_id"`
 		Question string `json:"question"`
 	}) (*mcp.CallToolResult, any, error) {
-		out, err := askUser(ctx, st, a.TaskID, a.Question)
+		out, err := askUser(ctx, st, req, a.TaskID, a.Question)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -346,7 +348,11 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 	return s
 }
 
-func askUser(ctx context.Context, st *store.Store, taskID int64, question string) (map[string]any, error) {
+// askUserHeartbeat is how often we emit MCP progress while blocked on a human.
+// Clients that idle-timeout tool calls (often ~20s) reset that clock on progress.
+const askUserHeartbeat = 5 * time.Second
+
+func askUser(ctx context.Context, st *store.Store, req *mcp.CallToolRequest, taskID int64, question string) (map[string]any, error) {
 	if taskID == 0 || question == "" {
 		return nil, fmt.Errorf("task_id and question are required")
 	}
@@ -354,11 +360,65 @@ func askUser(ctx context.Context, st *store.Store, taskID int64, question string
 	if err != nil {
 		return nil, err
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
-	ans, err := st.WaitForAnswer(waitCtx, q.ID, 200*time.Millisecond)
+	// Wait on the parent ctx only — no artificial deadline. MCP clients cancel
+	// when they give up; we surface that as a hard STOP so the agent does not
+	// invent an answer while the question stays pending for a later re-run.
+	ans, err := waitForAnswerWithProgress(ctx, st, req, q.ID)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf(
+				"ask_user cancelled before answer (question #%d still pending on the board) — STOP now; do not continue or guess. The human can answer in the UI and re-run the task",
+				q.ID,
+			)
+		}
 		return nil, err
 	}
 	return map[string]any{"answer": ans}, nil
+}
+
+// waitForAnswerWithProgress polls like store.WaitForAnswer, and when the client
+// supplied a progress token, heartbeats so long waits survive idle timeouts.
+func waitForAnswerWithProgress(ctx context.Context, st *store.Store, req *mcp.CallToolRequest, id int64) (string, error) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	var heartbeat <-chan time.Time
+	var token any
+	if req != nil && req.Params != nil {
+		token = req.Params.GetProgressToken()
+	}
+	if token != nil && req != nil && req.Session != nil {
+		hb := time.NewTicker(askUserHeartbeat)
+		defer hb.Stop()
+		heartbeat = hb.C
+	}
+
+	progress := 0.0
+	for {
+		q, err := st.GetQuestion(id)
+		if err != nil {
+			return "", err
+		}
+		switch q.Status {
+		case "answered":
+			if q.Answer == nil {
+				return "", errors.New("answered question has no answer")
+			}
+			return *q.Answer, nil
+		case "cancelled":
+			return "", errors.New("question cancelled")
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-heartbeat:
+			progress++
+			_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+				ProgressToken: token,
+				Progress:      progress,
+				Message:       "Waiting for human reply on the board",
+			})
+		case <-ticker.C:
+		}
+	}
 }

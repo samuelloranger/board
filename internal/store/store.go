@@ -6,15 +6,44 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
+// schemaVersion is the latest migration step applied by Open via PRAGMA user_version.
+// Bump when adding a new step; never reuse or renumber prior versions.
+const schemaVersion = 8
+
 var ErrNotFound = errors.New("task not found")
+
+// ValidationError is a client input error. The web layer maps it to HTTP 400.
+type ValidationError struct {
+	Msg string
+}
+
+func (e *ValidationError) Error() string { return e.Msg }
+
+// Invalid returns a ValidationError with the given message.
+func Invalid(msg string) error {
+	return &ValidationError{Msg: msg}
+}
+
+// Invalidf returns a ValidationError with a formatted message.
+func Invalidf(format string, args ...any) error {
+	return &ValidationError{Msg: fmt.Sprintf(format, args...)}
+}
 
 // Store owns all data access against a WAL-mode SQLite database.
 type Store struct {
 	db *sql.DB
+
+	// eventSig closes (and is replaced) whenever this process writes an event.
+	// SSE hubs wait on EventSignal so same-process emits wake immediately;
+	// a backup poll still covers events written by other board processes.
+	eventMu  sync.Mutex
+	eventSig chan struct{}
 }
 
 type Task struct {
@@ -115,24 +144,139 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	for _, col := range []string{"handoff_to", "handoff_reason"} {
-		// ADD COLUMN is a no-op-safe migration; ignore "duplicate column" errors.
-		_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN " + col + " TEXT")
-	}
-	// Additive tables for FE agent Run + ask_user (never edit the base schema string).
-	if _, err := db.Exec(extraTables); err != nil {
+	s := &Store{db: db, eventSig: make(chan struct{})}
+	if err := s.migrate(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("migrate extra: %w", err)
+		return nil, err
 	}
-	// Additive column for agent summary text (existing DBs already created runs).
-	_, _ = db.Exec(`ALTER TABLE runs ADD COLUMN message TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE notes ADD COLUMN author TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE runs ADD COLUMN wait TEXT NOT NULL DEFAULT ''`)
-	// Legacy PostToolUse hooks logged every tool name into events; drop them.
-	_, _ = db.Exec(`DELETE FROM events WHERE kind = 'tool'`)
-	s := &Store{db: db}
-	_ = s.migratePathsRelative()
 	return s, nil
+}
+
+// migrate applies pending schema/data steps gated on PRAGMA user_version.
+// Each step bumps the version on success so it never re-runs.
+func (s *Store) migrate() error {
+	ver, err := userVersion(s.db)
+	if err != nil {
+		return fmt.Errorf("user_version: %w", err)
+	}
+	if ver > schemaVersion {
+		return fmt.Errorf("database schema version %d is newer than this binary (%d)", ver, schemaVersion)
+	}
+
+	// v1: handoff columns on tasks.
+	if ver < 1 {
+		for _, col := range []string{"handoff_to", "handoff_reason"} {
+			if err := addColumn(s.db, "tasks", col, "TEXT"); err != nil {
+				return fmt.Errorf("migrate v1: %w", err)
+			}
+		}
+		if err := setUserVersion(s.db, 1); err != nil {
+			return err
+		}
+		ver = 1
+	}
+	// v2: project_paths / questions / runs / run_files (never edit the base schema string).
+	if ver < 2 {
+		if _, err := s.db.Exec(extraTables); err != nil {
+			return fmt.Errorf("migrate v2: %w", err)
+		}
+		if err := setUserVersion(s.db, 2); err != nil {
+			return err
+		}
+		ver = 2
+	}
+	// v3: runs.message (CREATE already has it on fresh DBs; ALTER for older ones).
+	if ver < 3 {
+		if err := addColumn(s.db, "runs", "message", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("migrate v3: %w", err)
+		}
+		if err := setUserVersion(s.db, 3); err != nil {
+			return err
+		}
+		ver = 3
+	}
+	// v4: notes.author
+	if ver < 4 {
+		if err := addColumn(s.db, "notes", "author", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("migrate v4: %w", err)
+		}
+		if err := setUserVersion(s.db, 4); err != nil {
+			return err
+		}
+		ver = 4
+	}
+	// v5: runs.wait
+	if ver < 5 {
+		if err := addColumn(s.db, "runs", "wait", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("migrate v5: %w", err)
+		}
+		if err := setUserVersion(s.db, 5); err != nil {
+			return err
+		}
+		ver = 5
+	}
+	// v6: runs.message_source
+	if ver < 6 {
+		if err := addColumn(s.db, "runs", "message_source", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("migrate v6: %w", err)
+		}
+		if err := setUserVersion(s.db, 6); err != nil {
+			return err
+		}
+		ver = 6
+	}
+	// v7: one-shot purge of legacy PostToolUse "tool" events.
+	if ver < 7 {
+		if _, err := s.db.Exec(`DELETE FROM events WHERE kind = 'tool'`); err != nil {
+			return fmt.Errorf("migrate v7: %w", err)
+		}
+		if err := setUserVersion(s.db, 7); err != nil {
+			return err
+		}
+		ver = 7
+	}
+	// v8: rewrite absolute project_paths / run_files to relative forms.
+	if ver < 8 {
+		if err := s.migratePathsRelative(); err != nil {
+			return fmt.Errorf("migrate v8: %w", err)
+		}
+		if err := setUserVersion(s.db, 8); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func userVersion(db *sql.DB) (int, error) {
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return 0, err
+	}
+	return v, nil
+}
+
+func setUserVersion(db *sql.DB, v int) error {
+	// PRAGMA user_version does not accept bound parameters.
+	_, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v))
+	if err != nil {
+		return fmt.Errorf("set user_version %d: %w", v, err)
+	}
+	return nil
+}
+
+// addColumn runs ALTER TABLE … ADD COLUMN, treating duplicate-column as success
+// so legacy DBs (user_version 0 with columns already present) upgrade cleanly.
+// Any other error is returned.
+func addColumn(db *sql.DB, table, col, decl string) error {
+	_, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN " + col + " " + decl)
+	if err != nil && !isDuplicateColumn(err) {
+		return err
+	}
+	return nil
+}
+
+func isDuplicateColumn(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column")
 }
 
 // migratePathsRelative rewrites legacy absolute project_paths to ~/… and

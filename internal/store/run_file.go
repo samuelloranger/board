@@ -1,7 +1,6 @@
 package store
 
 import (
-	"errors"
 	"strings"
 )
 
@@ -20,7 +19,7 @@ type RunFile struct {
 func (s *Store) AddRunFile(runID int64, path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return errors.New("path is required")
+		return Invalid("path is required")
 	}
 	r, err := s.GetRun(runID)
 	if err != nil {
