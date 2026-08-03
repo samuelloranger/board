@@ -150,6 +150,35 @@ func TestInstallCursorIntegration(t *testing.T) {
 	if !hasString(allow, cursorBoardAllow) {
 		t.Fatalf("missing %s in allow: %v", cursorBoardAllow, allow)
 	}
+
+	script := filepath.Join(home, ".cursor", "hooks", "board-after-file-edit.sh")
+	fi, err := os.Stat(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&0o111 == 0 {
+		t.Fatalf("hook script not executable: %v", fi.Mode())
+	}
+	hooksPath := filepath.Join(home, ".cursor", "hooks.json")
+	raw, err = os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hooksFile map[string]any
+	if err := json.Unmarshal(raw, &hooksFile); err != nil {
+		t.Fatal(err)
+	}
+	after := hooksFile["hooks"].(map[string]any)["afterFileEdit"].([]any)
+	nBoard := 0
+	for _, e := range after {
+		em := e.(map[string]any)
+		if em["command"] == cursorBoardHookCommand {
+			nBoard++
+		}
+	}
+	if nBoard != 1 {
+		t.Fatalf("want exactly one board afterFileEdit hook, got %d in %v", nBoard, after)
+	}
 }
 
 func TestInstallCursorCLIAllowlistPreservesAndIsIdempotent(t *testing.T) {

@@ -57,8 +57,8 @@ const cursorRuleMarkdown = "---\n" +
 	"\n" +
 	"Never let the board drift from reality.\n"
 
-// InstallCursorIntegration installs the board skill, always-on rule, and Agent CLI
-// MCP allowlist under ~/.cursor. All three are idempotent.
+// InstallCursorIntegration installs the board skill, always-on rule, Agent CLI
+// MCP allowlist, and afterFileEdit hook under ~/.cursor. All are idempotent.
 func InstallCursorIntegration(home string) error {
 	dir := filepath.Join(home, ".cursor")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -70,7 +70,71 @@ func InstallCursorIntegration(home string) error {
 	if err := InstallCursorRule(filepath.Join(dir, "rules", "board.mdc")); err != nil {
 		return err
 	}
-	return InstallCursorCLIAllowlist(filepath.Join(dir, "cli-config.json"))
+	if err := InstallCursorCLIAllowlist(filepath.Join(dir, "cli-config.json")); err != nil {
+		return err
+	}
+	return InstallCursorHooks(dir)
+}
+
+const cursorAfterFileEditScript = `#!/bin/sh
+# Cursor afterFileEdit → board run file (fail open)
+[ -z "$BOARD_RUN_ID" ] && exit 0
+input=$(cat)
+path=$(printf '%s' "$input" | sed -n 's/.*"file_path"[ ]*:[ ]*"\([^"]*\)".*/\1/p' | head -1)
+[ -z "$path" ] && path=$(printf '%s' "$input" | sed -n 's/.*"path"[ ]*:[ ]*"\([^"]*\)".*/\1/p' | head -1)
+[ -n "$path" ] && board run file "$path" >/dev/null 2>&1
+exit 0
+`
+
+const cursorBoardHookCommand = "./hooks/board-after-file-edit.sh"
+
+// InstallCursorHooks writes the afterFileEdit script and upserts hooks.json
+// under cursorDir (~/.cursor). Preserves other hooks; idempotent.
+func InstallCursorHooks(cursorDir string) error {
+	scriptPath := filepath.Join(cursorDir, "hooks", "board-after-file-edit.sh")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		return err
+	}
+	tmp := scriptPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(cursorAfterFileEditScript), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, scriptPath); err != nil {
+		return err
+	}
+	_ = os.Chmod(scriptPath, 0o755)
+
+	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	m := map[string]any{}
+	if raw, err := os.ReadFile(hooksPath); err == nil && len(raw) > 0 {
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return fmt.Errorf("%s: existing file is not valid JSON: %w", hooksPath, err)
+		}
+	}
+	if _, ok := m["version"]; !ok {
+		m["version"] = 1
+	}
+	hooks, _ := m["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	existing, _ := hooks["afterFileEdit"].([]any)
+	filtered := make([]any, 0, len(existing)+1)
+	for _, entry := range existing {
+		em, ok := entry.(map[string]any)
+		if !ok {
+			filtered = append(filtered, entry)
+			continue
+		}
+		if cmd, _ := em["command"].(string); cmd == cursorBoardHookCommand {
+			continue // drop prior board hook; re-append below
+		}
+		filtered = append(filtered, entry)
+	}
+	filtered = append(filtered, map[string]any{"command": cursorBoardHookCommand})
+	hooks["afterFileEdit"] = filtered
+	m["hooks"] = hooks
+	return writeFileAtomic(hooksPath, mustJSON(m))
 }
 
 // InstallCursorSkill writes (or overwrites) the board SKILL.md.
