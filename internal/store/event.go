@@ -40,6 +40,32 @@ func (s *Store) Events(sinceID int64, limit int) ([]Event, error) {
 	return out, rows.Err()
 }
 
+// RecentEvents returns the newest `limit` events in ascending id order. Used to
+// seed a fresh SSE connection so a page load replays a short tail instead of the
+// entire events table.
+func (s *Store) RecentEvents(limit int) ([]Event, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	rows, err := s.db.Query(
+		`SELECT id, task_id, kind, detail, created_at FROM (
+		   SELECT id, task_id, kind, detail, created_at FROM events ORDER BY id DESC LIMIT ?
+		 ) ORDER BY id ASC`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Event{}
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Detail, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // LogEvent appends a free-form activity event not tied to a specific task.
 func (s *Store) LogEvent(kind, detail string) error {
 	if kind == "" {

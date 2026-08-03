@@ -534,7 +534,9 @@
       }, 120);
     };
 
-    const es = new EventSource("/api/events?since=0");
+    // No `since` param: the server seeds a short tail of recent activity rather
+    // than replaying every event ever recorded.
+    const es = new EventSource("/api/events");
     es.onmessage = (m) => {
       const ev = JSON.parse(m.data);
       events = [ev, ...events].slice(0, 60);
@@ -1454,7 +1456,16 @@
     background: var(--surface-2); color: var(--text); font-family: inherit; font-size: 16px;
     transition: border-color .12s ease, box-shadow .12s ease;
   }
-  .field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .field textarea {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+    /* 16px, like the other inputs: anything smaller makes iOS Safari zoom on focus. */
+    background: var(--surface-2); color: var(--text); font-size: 16px; line-height: 1.5;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    resize: vertical; min-height: 96px;
+    transition: border-color .12s ease, box-shadow .12s ease;
+  }
+  .field input::placeholder, .field textarea::placeholder { color: var(--muted); }
+  .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
   .pri-seg { display: flex; gap: 4px; padding: 4px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; }
   .pri-seg button { flex: 1; min-height: 36px; border: none; border-radius: 7px; background: transparent; color: var(--muted); font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: background .12s ease, color .12s ease; }
   .pri-seg button.sel { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }

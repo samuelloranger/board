@@ -318,10 +318,24 @@ func HandlerConfig(cfg Config) http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 
-		since := int64(0)
+		// No explicit `since` means a fresh page load: seed with a short tail of
+		// recent activity instead of replaying the whole events table.
+		since := int64(-1)
 		if s := r.URL.Query().Get("since"); s != "" {
 			if v, err := strconv.ParseInt(s, 10, 64); err == nil {
 				since = v
+			}
+		}
+		if since < 0 {
+			if evs, err := st.RecentEvents(30); err == nil {
+				for _, e := range evs {
+					b, _ := json.Marshal(e)
+					fmt.Fprintf(w, "data: %s\n\n", b)
+					since = e.ID
+				}
+			}
+			if since < 0 {
+				since = 0
 			}
 		}
 		send := func() {
