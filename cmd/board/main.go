@@ -46,7 +46,7 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: board <mcp|serve|setup|list|board|add|move|archive|note> ...")
+		return fmt.Errorf("usage: board <mcp|serve|setup|list|board|add|move|archive|note|event|run> ...")
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
@@ -70,6 +70,8 @@ func run(args []string, stdout io.Writer) error {
 		return cmdNote(rest, stdout)
 	case "event":
 		return cmdEvent(rest, stdout)
+	case "run":
+		return cmdRun(rest, stdout)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -223,6 +225,37 @@ func cmdEvent(args []string, stdout io.Writer) error {
 		detail = strings.Join(args[1:], " ")
 	}
 	return st.LogEvent(args[0], detail)
+}
+
+func cmdRun(args []string, stdout io.Writer) error {
+	if len(args) < 1 || args[0] != "file" {
+		return fmt.Errorf("usage: board run file <path>")
+	}
+	return cmdRunFile(args[1:], stdout)
+}
+
+// cmdRunFile records a touched path on the run named by BOARD_RUN_ID.
+// Missing/invalid env or store errors fail open (nil) so agent hooks never break.
+func cmdRunFile(args []string, stdout io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: board run file <path>")
+	}
+	path := strings.Join(args, " ")
+	ridStr := os.Getenv("BOARD_RUN_ID")
+	if ridStr == "" {
+		return nil
+	}
+	rid, err := strconv.ParseInt(ridStr, 10, 64)
+	if err != nil || rid <= 0 {
+		return nil
+	}
+	st, err := openStore()
+	if err != nil {
+		return nil
+	}
+	defer st.Close()
+	_ = st.AddRunFile(rid, path)
+	return nil
 }
 
 func runServe(args []string, stdout io.Writer) error {
