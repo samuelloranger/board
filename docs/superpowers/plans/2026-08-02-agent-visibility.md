@@ -458,3 +458,15 @@ EOF
 - Spawn **must** CreateRun before Start (Task 4) — differs from current Start-then-CreateRun.
 - Claude hook must buffer stdin once (Task 5).
 - No TBD placeholders in steps.
+
+## Cursor CLI hook verification (2026-08-02)
+
+- `board setup --yes` installs `~/.cursor/hooks.json` → `afterFileEdit` → `./hooks/board-after-file-edit.sh`.
+- Hook stdin smoke with `BOARD_RUN_ID` set: records path via `board run file` (pass).
+- Live UI Run via `cursor-agent`: editing a file in this session did **not** auto-append to `run_files` unless the hook was invoked manually — treat Cursor CLI file list as **best-effort / IDE-hook path** (matches spec risk). Claude PostToolUse path → `run_files` still ships; Cursor UI Runs still get agent badge + note mini-thread.
+
+## Claude PostToolUse via setup (2026-08-02 follow-up)
+
+- Gap: Task 5 only updated the Claude **plugin** hook; `board setup` installed SessionStart + CLAUDE.md but not PostToolUse, so machines without the plugin enabled never got file-list recording.
+- Fix: `InstallClaudeRules` now also writes `~/.claude/hooks/board-post-tool-use.sh` and upserts `hooks.PostToolUse` (matcher `*`) in `~/.claude/settings.json`. Idempotent; preserves other PostToolUse groups.
+- Verified: `board setup --yes` after rebuild; settings contain the absolute script path; hook stdin smoke exits 0.

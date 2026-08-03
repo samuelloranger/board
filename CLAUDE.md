@@ -22,6 +22,7 @@ dependency — the store is the only shared state, and all three can run at once
 - `internal/store/` — SQLite data layer. `store.go` (schema/Open), `task.go`, `note.go`, `board.go`,
   `handoff.go`, `event.go` (activity feed), `project.go` (git-root project detection),
   `project_path.go` / `question.go` / `run.go` (FE agent Run + ask_user bridge).
+  Project paths store as home-relative (`~/…`); `run_files` store project-root-relative.
 - `internal/agent/` — provenance prompt + `CursorRunner` for spawning `cursor-agent`.
 - `internal/mcpserver/` — `BuildServer(st, defaultProject)`, the MCP tool surface.
 - `internal/web/` — `web.go` HTTP handlers + `//go:embed all:ui/dist`; `ui/` is the Svelte 5 + Vite app.

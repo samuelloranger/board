@@ -40,16 +40,19 @@ func (s *Store) Events(sinceID int64, limit int) ([]Event, error) {
 	return out, rows.Err()
 }
 
-// RecentEvents returns the newest `limit` events in ascending id order. Used to
-// seed a fresh SSE connection so a page load replays a short tail instead of the
-// entire events table.
+// RecentEvents returns the newest `limit` activity events in ascending id order.
+// Used to seed a fresh SSE connection so a page load replays a short tail instead
+// of the entire events table. Skips tool/run_progress noise (hooks / live agent
+// chatter) so the Activity drawer opens with useful history.
 func (s *Store) RecentEvents(limit int) ([]Event, error) {
 	if limit <= 0 {
 		limit = 30
 	}
 	rows, err := s.db.Query(
 		`SELECT id, task_id, kind, detail, created_at FROM (
-		   SELECT id, task_id, kind, detail, created_at FROM events ORDER BY id DESC LIMIT ?
+		   SELECT id, task_id, kind, detail, created_at FROM events
+		   WHERE kind NOT IN ('tool', 'run_progress')
+		   ORDER BY id DESC LIMIT ?
 		 ) ORDER BY id ASC`, limit)
 	if err != nil {
 		return nil, err
@@ -67,9 +70,14 @@ func (s *Store) RecentEvents(limit int) ([]Event, error) {
 }
 
 // LogEvent appends a free-form activity event not tied to a specific task.
+// Kind "tool" is ignored: PostToolUse hooks used to log every tool name and
+// flooded the activity feed / events table.
 func (s *Store) LogEvent(kind, detail string) error {
 	if kind == "" {
 		return errors.New("event kind is required")
+	}
+	if kind == "tool" {
+		return nil
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO events (task_id, kind, detail, created_at) VALUES (NULL, ?, ?, ?)`,

@@ -36,7 +36,8 @@ const cursorSkillMarkdown = "---\n" +
 	"## Rules\n" +
 	"- One task per meaningful unit of work. Don't create tasks for trivial one-liners.\n" +
 	"- Keep exactly one task `in_progress` at a time when possible.\n" +
-	"- Archive (not delete) completed work you want to keep a record of: `archive_task`.\n"
+	"- Archive (not delete) completed work you want to keep a record of: `archive_task`.\n" +
+	"- File paths in notes are repo-relative only — never absolute or home paths.\n"
 
 // Cursor always-on rule — injected every session (editor + Agent CLI).
 const cursorRuleMarkdown = "---\n" +
@@ -51,7 +52,7 @@ const cursorRuleMarkdown = "---\n" +
 	"- Starting a task → `move_task` to `in_progress` before touching code.\n" +
 	"- Finishing a task → `add_note` (what changed + how verified), then `move_task` to `done`.\n" +
 	"- New work surfaced mid-session → `create_task` immediately.\n" +
-	"- Progress/findings mid-task → `add_note` as you go.\n" +
+	"- Progress/findings mid-task → `add_note` as you go (repo-relative paths only — never absolute or home paths).\n" +
 	"- Before deciding what's next → `get_board` / `list_tasks`.\n" +
 	"- Session start → `resume` to restore in-progress work and handoffs.\n" +
 	"\n" +

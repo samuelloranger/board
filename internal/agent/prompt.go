@@ -14,7 +14,7 @@ func BuildPrompt(tk *store.Task) string {
 	b.WriteString("Use the board MCP tools to update this task as you work.\n")
 	b.WriteString("If you need human input, call ask_user with this task_id — do not use terminal prompts.\n\n")
 	b.WriteString("LIVE PROGRESS (required):\n")
-	b.WriteString("- Call add_note on this task at the start, after each meaningful step, and whenever you edit or create files (include the paths).\n")
+	b.WriteString("- Call add_note on this task at the start, after each meaningful step, and whenever you edit or create files (include repo-relative paths only — never absolute or home paths).\n")
 	b.WriteString("- Keep notes short (1–3 sentences). The human watches them live on the board card.\n")
 	b.WriteString("- Do not go silent for long stretches of tool use without a note.\n")
 	b.WriteString("- If blocked on CI or an external job, call set_run_wait with wait='ci', then clear it (wait='') when you resume.\n\n")

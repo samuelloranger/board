@@ -25,3 +25,4 @@ You have a kanban board via the `board` MCP server. Use it to persist work acros
 - One task per meaningful unit of work. Don't create tasks for trivial one-liners.
 - Keep exactly one task `in_progress` at a time when possible.
 - Archive (not delete) completed work you want to keep a record of: `archive_task`.
+- File paths in notes are repo-relative only — never absolute or home paths.

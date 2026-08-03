@@ -8,7 +8,8 @@ import (
 // GlobalProjectKey is the project_paths key for tasks with a null project.
 const GlobalProjectKey = "_"
 
-// ProjectPath maps a board project name to an absolute working directory.
+// ProjectPath maps a board project name to a working directory.
+// Path is stored home-relative (~/…) when under the user home; absolute otherwise.
 type ProjectPath struct {
 	Project   string `json:"project"`
 	Path      string `json:"path"`
@@ -22,21 +23,31 @@ func normalizeProjectKey(project string) string {
 	return project
 }
 
-func (s *Store) SetProjectPath(project, absPath string) (*ProjectPath, error) {
-	if absPath == "" {
+func (s *Store) SetProjectPath(project, path string) (*ProjectPath, error) {
+	if path == "" {
 		return nil, errors.New("path is required")
 	}
 	project = normalizeProjectKey(project)
+	stored := RelativizeToHome(ExpandUserPath(path))
 	ts := now()
 	_, err := s.db.Exec(
 		`INSERT INTO project_paths (project, path, updated_at) VALUES (?, ?, ?)
 		 ON CONFLICT(project) DO UPDATE SET path = excluded.path, updated_at = excluded.updated_at`,
-		project, absPath, ts,
+		project, stored, ts,
 	)
 	if err != nil {
 		return nil, err
 	}
 	return s.GetProjectPath(project)
+}
+
+// ResolveProjectPath returns the absolute filesystem path for a project mapping.
+func (s *Store) ResolveProjectPath(project string) (string, error) {
+	pp, err := s.GetProjectPath(project)
+	if err != nil {
+		return "", err
+	}
+	return ExpandUserPath(pp.Path), nil
 }
 
 func (s *Store) GetProjectPath(project string) (*ProjectPath, error) {

@@ -227,12 +227,13 @@ func HandlerConfig(cfg Config) http.Handler {
 				http.Error(w, "invalid JSON body", http.StatusBadRequest)
 				return
 			}
-			fi, err := os.Stat(body.Path)
+			abs := store.ExpandUserPath(body.Path)
+			fi, err := os.Stat(abs)
 			if err != nil || !fi.IsDir() {
 				http.Error(w, "path must be an existing directory", http.StatusBadRequest)
 				return
 			}
-			pp, err := st.SetProjectPath(name, body.Path)
+			pp, err := st.SetProjectPath(name, abs)
 			writeJSON(w, pp, err)
 		case http.MethodDelete:
 			err := st.DeleteProjectPath(name)
@@ -440,7 +441,7 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, resolveR
 	if tk.Project != nil && *tk.Project != "" {
 		projKey = *tk.Project
 	}
-	pp, err := st.GetProjectPath(projKey)
+	cwd, err := st.ResolveProjectPath(projKey)
 	if errors.Is(err, store.ErrNotFound) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -473,7 +474,7 @@ func handleRun(w http.ResponseWriter, r *http.Request, st *store.Store, resolveR
 		fmt.Sprintf("BOARD_RUN_ID=%d", run.ID),
 	)
 	started, err := runner.Start(agent.StartOpts{
-		Cwd:    pp.Path,
+		Cwd:    cwd,
 		Prompt: agent.BuildPrompt(tk),
 		Env:    env,
 		OnProgress: func(output string) {

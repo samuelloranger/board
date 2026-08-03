@@ -1,6 +1,6 @@
 # Agent visibility — who is working, progress, files touched
 
-**Status:** Design approved — awaiting implementation plan  
+**Status:** Shipped on main (2026-08-02). Cursor CLI `afterFileEdit` best-effort — see plan verification note. Claude PostToolUse also installed by `board setup` into `~/.claude/settings.json` (not plugin-only).  
 **Date:** 2026-08-02  
 **Project:** board  
 **Task:** #636  

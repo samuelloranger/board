@@ -92,6 +92,76 @@ func TestInstallClaudeMdInsertsAndReplacesInPlace(t *testing.T) {
 	}
 }
 
+func TestInstallClaudeRulesInstallsPostToolUse(t *testing.T) {
+	home := t.TempDir()
+	settings := filepath.Join(home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(settings, []byte(`{"theme":"dark","hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo keep-me"}]}]}}`), 0o644)
+
+	if err := InstallClaudeRules(home); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallClaudeRules(home); err != nil { // idempotent
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(home, ".claude", "hooks", "board-post-tool-use.sh")
+	fi, err := os.Stat(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&0o111 == 0 {
+		t.Fatalf("hook script not executable: %v", fi.Mode())
+	}
+	body, _ := os.ReadFile(script)
+	if !strings.Contains(string(body), "board run file") {
+		t.Fatalf("script missing board run file:\n%s", body)
+	}
+	if strings.Contains(string(body), "board event tool") {
+		t.Fatalf("script must not log every tool use:\n%s", body)
+	}
+
+	raw, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("settings not valid JSON: %v", err)
+	}
+	if m["theme"] != "dark" {
+		t.Fatal("clobbered unrelated setting")
+	}
+	post := m["hooks"].(map[string]any)["PostToolUse"].([]any)
+	nBoard, keep := 0, false
+	for _, g := range post {
+		gm := g.(map[string]any)
+		if matcher, _ := gm["matcher"].(string); matcher == "Bash" {
+			keep = true
+		}
+		for _, h := range gm["hooks"].([]any) {
+			cmd, _ := h.(map[string]any)["command"].(string)
+			if strings.Contains(cmd, claudePostToolUseMarker) {
+				nBoard++
+			}
+			if strings.Contains(cmd, "echo keep-me") {
+				keep = true
+			}
+		}
+	}
+	if !keep {
+		t.Fatal("clobbered pre-existing PostToolUse hook")
+	}
+	if nBoard != 1 {
+		t.Fatalf("want exactly one board PostToolUse hook, got %d in %s", nBoard, raw)
+	}
+	if !strings.Contains(string(raw), boardHookMarker) {
+		t.Fatal("SessionStart board hook missing")
+	}
+}
+
 func TestWriteTOMLServer(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.toml")
 	os.WriteFile(p, []byte("model = \"gpt-5.5\"\n"), 0o644)

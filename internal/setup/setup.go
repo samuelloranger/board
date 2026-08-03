@@ -83,10 +83,28 @@ func removeTOMLBlock(content, header string) string {
 // `board setup` also installs the "always keep the board updated" behavior into
 // Claude Code so every session is reminded automatically:
 //   1. a SessionStart hook in ~/.claude/settings.json (the automatic trigger)
-//   2. a marker-delimited rules block in ~/.claude/CLAUDE.md (the instruction)
-// Both are idempotent — re-running setup replaces the board entries in place.
+//   2. a PostToolUse hook that records write paths on UI Runs (not every tool)
+//   3. a marker-delimited rules block in ~/.claude/CLAUDE.md (the instruction)
+// All are idempotent — re-running setup replaces the board entries in place.
 
 const boardHookMarker = "BOARD (always on)"
+
+const claudePostToolUseMarker = "board-post-tool-use.sh"
+
+const claudePostToolUseScript = `#!/bin/sh
+# Claude Code PostToolUse: best-effort record write paths on the active UI Run
+# (BOARD_RUN_ID). Does not log every tool name into the activity feed.
+input=$(cat)
+tool=$(printf '%s' "$input" | sed -n 's/.*"tool_name"[ ]*:[ ]*"\([^"]*\)".*/\1/p' | head -1)
+case "$tool" in
+  Write|Edit|MultiEdit|NotebookEdit)
+    path=$(printf '%s' "$input" | sed -n 's/.*"file_path"[ ]*:[ ]*"\([^"]*\)".*/\1/p' | head -1)
+    [ -z "$path" ] && path=$(printf '%s' "$input" | sed -n 's/.*"path"[ ]*:[ ]*"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$path" ] && board run file "$path" >/dev/null 2>&1
+    ;;
+esac
+exit 0
+`
 
 const (
 	boardMdStart = "<!-- BOARD_RULES_START -->"
@@ -98,7 +116,7 @@ const boardRulesMarkdown = "## Board / Kanban (ALWAYS ON)\n\n" +
 	"- Starting a task → `move_task` to `in_progress` before touching code.\n" +
 	"- Finishing a task → `add_note` (what changed + how verified), then `move_task` to `done`.\n" +
 	"- New work surfaced mid-session → `create_task` immediately.\n" +
-	"- Progress/findings mid-task → `add_note` as you go.\n" +
+	"- Progress/findings mid-task → `add_note` as you go (repo-relative paths only — never absolute or home paths).\n" +
 	"- Before deciding what's next → `get_board` / `list_tasks`.\n\n" +
 	"If a board tool isn't loaded, load it via ToolSearch (`mcp__board__*`). Never let the board drift from reality.\n"
 
@@ -124,8 +142,8 @@ func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// InstallClaudeRules installs both the SessionStart hook and the CLAUDE.md rules
-// block under the given home directory's ~/.claude.
+// InstallClaudeRules installs the SessionStart hook, PostToolUse path hook, and
+// CLAUDE.md rules block under the given home directory's ~/.claude.
 func InstallClaudeRules(home string) error {
 	dir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -134,7 +152,56 @@ func InstallClaudeRules(home string) error {
 	if err := InstallSettingsHook(filepath.Join(dir, "settings.json")); err != nil {
 		return err
 	}
+	if err := InstallClaudePostToolUse(dir); err != nil {
+		return err
+	}
 	return InstallClaudeMd(filepath.Join(dir, "CLAUDE.md"))
+}
+
+// InstallClaudePostToolUse writes hooks/board-post-tool-use.sh and upserts a
+// PostToolUse entry in settings.json. Preserves other hooks; idempotent.
+func InstallClaudePostToolUse(claudeDir string) error {
+	scriptPath := filepath.Join(claudeDir, "hooks", claudePostToolUseMarker)
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		return err
+	}
+	tmp := scriptPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(claudePostToolUseScript), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, scriptPath); err != nil {
+		return err
+	}
+	_ = os.Chmod(scriptPath, 0o755)
+
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	m := map[string]any{}
+	if raw, err := os.ReadFile(settingsPath); err == nil && len(raw) > 0 {
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return fmt.Errorf("%s: existing file is not valid JSON: %w", settingsPath, err)
+		}
+	}
+	hooks, _ := m["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	var groups []any
+	if existing, ok := hooks["PostToolUse"].([]any); ok {
+		for _, g := range existing {
+			if !groupHasMarker(g, claudePostToolUseMarker) {
+				groups = append(groups, g)
+			}
+		}
+	}
+	groups = append(groups, map[string]any{
+		"matcher": "*",
+		"hooks": []any{
+			map[string]any{"type": "command", "command": scriptPath},
+		},
+	})
+	hooks["PostToolUse"] = groups
+	m["hooks"] = hooks
+	return writeFileAtomic(settingsPath, mustJSON(m))
 }
 
 // InstallSettingsHook upserts the board SessionStart hook into a settings.json,

@@ -128,7 +128,131 @@ func Open(path string) (*Store, error) {
 	_, _ = db.Exec(`ALTER TABLE runs ADD COLUMN message TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE notes ADD COLUMN author TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE runs ADD COLUMN wait TEXT NOT NULL DEFAULT ''`)
-	return &Store{db: db}, nil
+	// Legacy PostToolUse hooks logged every tool name into events; drop them.
+	_, _ = db.Exec(`DELETE FROM events WHERE kind = 'tool'`)
+	s := &Store{db: db}
+	_ = s.migratePathsRelative()
+	return s, nil
+}
+
+// migratePathsRelative rewrites legacy absolute project_paths to ~/… and
+// run_files under a mapped project root to project-relative paths.
+func (s *Store) migratePathsRelative() error {
+	rows, err := s.db.Query(`SELECT project, path FROM project_paths`)
+	if err != nil {
+		return err
+	}
+	type ppRow struct{ project, path string }
+	var pps []ppRow
+	for rows.Next() {
+		var r ppRow
+		if err := rows.Scan(&r.project, &r.path); err != nil {
+			rows.Close()
+			return err
+		}
+		pps = append(pps, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range pps {
+		next := RelativizeToHome(ExpandUserPath(r.path))
+		if next == r.path {
+			continue
+		}
+		if _, err := s.db.Exec(`UPDATE project_paths SET path = ? WHERE project = ?`, next, r.project); err != nil {
+			return err
+		}
+	}
+
+	frows, err := s.db.Query(`
+		SELECT rf.run_id, rf.path, rf.first_seen_at, COALESCE(t.project, '') AS project
+		FROM run_files rf
+		JOIN runs r ON r.id = rf.run_id
+		JOIN tasks t ON t.id = r.task_id`)
+	if err != nil {
+		return err
+	}
+	type fr struct {
+		runID       int64
+		path        string
+		firstSeenAt string
+		project     string
+	}
+	var files []fr
+	for frows.Next() {
+		var f fr
+		if err := frows.Scan(&f.runID, &f.path, &f.firstSeenAt, &f.project); err != nil {
+			frows.Close()
+			return err
+		}
+		files = append(files, f)
+	}
+	frows.Close()
+	if err := frows.Err(); err != nil {
+		return err
+	}
+	for _, f := range files {
+		projKey := f.project
+		if projKey == "" {
+			projKey = GlobalProjectKey
+		}
+		root, err := s.ResolveProjectPath(projKey)
+		if err != nil {
+			continue
+		}
+		next := RelativizeToRoot(f.path, root)
+		if next == f.path {
+			continue
+		}
+		if _, err := s.db.Exec(
+			`INSERT OR IGNORE INTO run_files (run_id, path, first_seen_at) VALUES (?, ?, ?)`,
+			f.runID, next, f.firstSeenAt,
+		); err != nil {
+			return err
+		}
+		if _, err := s.db.Exec(`DELETE FROM run_files WHERE run_id = ? AND path = ?`, f.runID, f.path); err != nil {
+			return err
+		}
+	}
+
+	// Unduplicate absolute prefixes in historical run_file activity details.
+	erows, err := s.db.Query(`SELECT id, task_id, detail FROM events WHERE kind = 'run_file' AND detail LIKE '/%'`)
+	if err != nil {
+		return err
+	}
+	type ev struct {
+		id     int64
+		taskID sql.NullInt64
+		detail string
+	}
+	var evs []ev
+	for erows.Next() {
+		var e ev
+		if err := erows.Scan(&e.id, &e.taskID, &e.detail); err != nil {
+			erows.Close()
+			return err
+		}
+		evs = append(evs, e)
+	}
+	erows.Close()
+	if err := erows.Err(); err != nil {
+		return err
+	}
+	for _, e := range evs {
+		if !e.taskID.Valid {
+			continue
+		}
+		next := s.relativizeRunFilePath(e.taskID.Int64, e.detail)
+		if next == e.detail {
+			continue
+		}
+		if _, err := s.db.Exec(`UPDATE events SET detail = ? WHERE id = ?`, truncate(next, 80), e.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const extraTables = `

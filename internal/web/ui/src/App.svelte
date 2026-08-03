@@ -221,11 +221,15 @@
     };
   }
   function eventVisible(e) {
+    if (e.kind === "tool" || e.kind === "run_progress") return false;
     if (projectFilter === "*") return true;
     if (!e.task_id) return true;
     const t = findTask(e.task_id);
     if (!t) return true;
     return (t.project || "") === projectFilter || (projectFilter === "_" && !t.project);
+  }
+  function isActivityEvent(e) {
+    return e.kind !== "tool" && e.kind !== "run_progress";
   }
   async function runTask(id, agent = selectedAgent) {
     runError = "";
@@ -573,8 +577,10 @@
     const es = new EventSource("/api/events");
     es.onmessage = (m) => {
       const ev = JSON.parse(m.data);
-      events = [ev, ...events].slice(0, 60);
-      if (!syncing) unseen = Math.min(unseen + 1, 99);
+      if (isActivityEvent(ev)) {
+        events = [ev, ...events].slice(0, 60);
+        if (!syncing) unseen = Math.min(unseen + 1, 99);
+      }
       if (!syncing && ev.kind === "question" && ev.task_id) {
         notifyAsk(ev.task_id, ev.detail);
         if (!detail) openDetail(findTask(ev.task_id) ?? { id: ev.task_id });
@@ -1081,7 +1087,7 @@
         {#if needPath && needPath.taskId === detail.id}
           <div class="path-prompt">
             <p>Where is project <strong>{needPath.project === "_" ? "(global)" : needPath.project}</strong> on disk?</p>
-            <input bind:value={pathInput} placeholder="/home/you/sites/…" onkeydown={(e) => { if (e.key === "Enter") savePathAndRun(); }} />
+            <input bind:value={pathInput} placeholder="~/sites/…" onkeydown={(e) => { if (e.key === "Enter") savePathAndRun(); }} />
             <div class="modal-foot">
               <button class="btn-ghost" onclick={() => (needPath = null)}>Cancel</button>
               <button class="btn-primary" disabled={!pathInput.trim()} onclick={savePathAndRun}>Save &amp; Run</button>
