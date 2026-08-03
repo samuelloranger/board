@@ -34,3 +34,30 @@ func TestLogEvent(t *testing.T) {
 		t.Fatalf("LogEvent wrong: %+v", evs)
 	}
 }
+
+func TestRecentEvents(t *testing.T) {
+	st := newTestStore(t)
+	for i := 0; i < 10; i++ {
+		if err := st.LogEvent("tool", "x"); err != nil {
+			t.Fatalf("LogEvent: %v", err)
+		}
+	}
+	evs, err := st.RecentEvents(3)
+	if err != nil {
+		t.Fatalf("RecentEvents: %v", err)
+	}
+	if len(evs) != 3 {
+		t.Fatalf("want 3, got %d", len(evs))
+	}
+	// Ascending id order, and the newest three overall.
+	if evs[0].ID >= evs[1].ID || evs[1].ID >= evs[2].ID {
+		t.Fatalf("not ascending: %+v", evs)
+	}
+	all, _ := st.Events(0, 100)
+	want := all[len(all)-3:]
+	for i := range evs {
+		if evs[i].ID != want[i].ID {
+			t.Fatalf("tail mismatch at %d: got %d want %d", i, evs[i].ID, want[i].ID)
+		}
+	}
+}
