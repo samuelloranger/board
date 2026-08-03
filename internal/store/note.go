@@ -44,3 +44,41 @@ func (s *Store) AddNote(taskID int64, body, author string) (*Note, error) {
 	}
 	return &Note{ID: id, TaskID: taskID, Body: body, Author: author, CreatedAt: ts}, nil
 }
+
+// RecentNotes returns up to limit notes for taskID with the given author
+// (empty author = any). SQL is newest-first; the returned slice is oldest→newest
+// for UI mini-threads. limit <= 0 yields an empty slice.
+func (s *Store) RecentNotes(taskID int64, limit int, author string) ([]Note, error) {
+	if limit <= 0 {
+		return []Note{}, nil
+	}
+	q := `SELECT id, task_id, body, author, created_at FROM notes WHERE task_id = ?`
+	args := []any{taskID}
+	if author != "" {
+		q += ` AND author = ?`
+		args = append(args, author)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	desc := []Note{}
+	for rows.Next() {
+		var n Note
+		if err := rows.Scan(&n.ID, &n.TaskID, &n.Body, &n.Author, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		desc = append(desc, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]Note, len(desc))
+	for i := range desc {
+		out[len(desc)-1-i] = desc[i]
+	}
+	return out, nil
+}

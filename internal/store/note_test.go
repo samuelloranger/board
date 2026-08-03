@@ -46,3 +46,45 @@ func TestAddNoteAuthor(t *testing.T) {
 		t.Fatalf("empty author: %v %+v", err, empty)
 	}
 }
+
+func TestRecentNotesAgentLimit(t *testing.T) {
+	st := newTestStore(t)
+	tk, _ := st.CreateTask(CreateTaskParams{Title: "t"})
+	_, _ = st.AddNote(tk.ID, "h1", "human")
+	_, _ = st.AddNote(tk.ID, "a1", "agent")
+	_, _ = st.AddNote(tk.ID, "a2", "agent")
+	_, _ = st.AddNote(tk.ID, "a3", "agent")
+	_, _ = st.AddNote(tk.ID, "a4", "agent")
+	notes, err := st.RecentNotes(tk.ID, 3, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 3 || notes[0].Body != "a2" || notes[2].Body != "a4" {
+		t.Fatalf("%+v", notes)
+	}
+}
+
+func TestAttachRecentAgentNotesOnlyRunning(t *testing.T) {
+	st := newTestStore(t)
+	tk, _ := st.CreateTask(CreateTaskParams{Title: "t", Status: "in_progress"})
+	_, _ = st.AddNote(tk.ID, "note", "agent")
+	b, _ := st.GetBoard(nil)
+	_ = st.AttachRecentAgentNotes(b, 3)
+	for _, tsk := range b.InProgress {
+		if tsk.ID == tk.ID && len(tsk.RecentAgentNotes) != 0 {
+			t.Fatal("expected no notes without running run")
+		}
+	}
+	_, _ = st.CreateRun(tk.ID, "cursor", 1)
+	b, _ = st.GetBoard(nil)
+	_ = st.AttachRecentAgentNotes(b, 3)
+	for _, tsk := range b.InProgress {
+		if tsk.ID == tk.ID {
+			if len(tsk.RecentAgentNotes) != 1 || tsk.RecentAgentNotes[0].Body != "note" {
+				t.Fatalf("%+v", tsk.RecentAgentNotes)
+			}
+			return
+		}
+	}
+	t.Fatal("task missing")
+}

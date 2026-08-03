@@ -18,20 +18,21 @@ type Store struct {
 }
 
 type Task struct {
-	ID            int64    `json:"id"`
-	Title         string   `json:"title"`
-	Description   string   `json:"description,omitempty"`
-	Status        string   `json:"status"`
-	Project       *string  `json:"project,omitempty"`
-	Priority      *string  `json:"priority,omitempty"`
-	DueDate       *string  `json:"due_date,omitempty"`
-	Archived      bool     `json:"archived"`
-	HandoffTo     *string  `json:"handoff_to,omitempty"`
-	HandoffReason *string  `json:"handoff_reason,omitempty"`
-	Tags          []string `json:"tags"`
-	Notes         []Note   `json:"notes,omitempty"`
-	CreatedAt     string   `json:"created_at"`
-	UpdatedAt     string   `json:"updated_at"`
+	ID               int64    `json:"id"`
+	Title            string   `json:"title"`
+	Description      string   `json:"description,omitempty"`
+	Status           string   `json:"status"`
+	Project          *string  `json:"project,omitempty"`
+	Priority         *string  `json:"priority,omitempty"`
+	DueDate          *string  `json:"due_date,omitempty"`
+	Archived         bool     `json:"archived"`
+	HandoffTo        *string  `json:"handoff_to,omitempty"`
+	HandoffReason    *string  `json:"handoff_reason,omitempty"`
+	Tags             []string `json:"tags"`
+	Notes            []Note   `json:"notes,omitempty"`
+	RecentAgentNotes []Note   `json:"recent_agent_notes,omitempty"`
+	CreatedAt        string   `json:"created_at"`
+	UpdatedAt        string   `json:"updated_at"`
 }
 
 type Note struct {

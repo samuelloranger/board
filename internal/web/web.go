@@ -70,6 +70,9 @@ func HandlerConfig(cfg Config) http.Handler {
 			proj = &p
 		}
 		b, err := st.GetBoard(proj)
+		if err == nil {
+			_ = st.AttachRecentAgentNotes(b, 3)
+		}
 		writeJSON(w, b, err)
 	})
 
