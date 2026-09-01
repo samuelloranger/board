@@ -42,7 +42,7 @@ func TestCLIEvent(t *testing.T) {
 	}
 }
 
-func TestAllowedHostFor(t *testing.T) {
+func TestBindHost(t *testing.T) {
 	cases := map[string]string{
 		"127.0.0.1:7420":   "127.0.0.1",
 		"localhost:7420":   "localhost",
@@ -54,8 +54,61 @@ func TestAllowedHostFor(t *testing.T) {
 		":7420":        "*",
 	}
 	for addr, want := range cases {
-		if got := allowedHostFor(addr); got != want {
-			t.Errorf("allowedHostFor(%q) = %q, want %q", addr, got, want)
+		if got := bindHost(addr); got != want {
+			t.Errorf("bindHost(%q) = %q, want %q", addr, got, want)
 		}
+	}
+}
+
+func TestAllowedHosts(t *testing.T) {
+	cases := []struct {
+		name     string
+		addr     string
+		explicit []string
+		want     []string
+	}{
+		{
+			name: "loopback bind pins itself",
+			addr: "127.0.0.1:7420",
+			want: []string{"127.0.0.1"},
+		},
+		{
+			name: "unspecified bind alone disables the check",
+			addr: "0.0.0.0:7420",
+			want: []string{"*"},
+		},
+		{
+			// The reverse-proxy case: bind wide, still pin the Host header.
+			// The wildcard must NOT survive, or the flag does nothing.
+			name:     "explicit host suppresses the wildcard",
+			addr:     "0.0.0.0:7420",
+			explicit: []string{"board.samlo.cloud"},
+			want:     []string{"board.samlo.cloud"},
+		},
+		{
+			name:     "explicit hosts keep a concrete bind too",
+			addr:     "192.168.50.30:7420",
+			explicit: []string{"board.samlo.cloud"},
+			want:     []string{"board.samlo.cloud", "192.168.50.30"},
+		},
+		{
+			name:     "several explicit hosts",
+			addr:     "0.0.0.0:7420",
+			explicit: []string{"board.samlo.cloud", "board.lan"},
+			want:     []string{"board.samlo.cloud", "board.lan"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := allowedHosts(tc.addr, tc.explicit)
+			if len(got) != len(tc.want) {
+				t.Fatalf("allowedHosts(%q, %v) = %v, want %v", tc.addr, tc.explicit, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("allowedHosts(%q, %v) = %v, want %v", tc.addr, tc.explicit, got, tc.want)
+				}
+			}
+		})
 	}
 }

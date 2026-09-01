@@ -65,6 +65,17 @@ board archive 3               # archive task #3
 board serve                   # open the web UI at http://127.0.0.1:7420
 ```
 
+`board serve` binds loopback and only answers to a loopback `Host` header. Behind a reverse proxy, bind
+wider but keep the name pinned — otherwise `--addr 0.0.0.0` answers to any hostname:
+
+```bash
+board serve --addr 0.0.0.0:7420 --allow-host board.example.com
+```
+
+There is still **no authentication**: anyone who can reach the port has full read/write, and
+`POST /api/tasks/{id}/run` launches a coding agent on that machine. Put a proxy with real auth in front,
+or keep it on loopback / a private tunnel.
+
 ## MCP tools
 
 `create_task`, `list_tasks`, `get_task`, `update_task`, `move_task`,

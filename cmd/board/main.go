@@ -261,13 +261,24 @@ func cmdRunFile(args []string, stdout io.Writer) error {
 
 func runServe(args []string, stdout io.Writer) error {
 	addr := "127.0.0.1:7420"
+	var allowHosts []string
 	for len(args) > 0 {
 		switch args[0] {
 		case "--addr":
 			if len(args) < 2 {
-				return fmt.Errorf("usage: board serve [--addr host:port]: --addr requires a value")
+				return fmt.Errorf("usage: board serve [--addr host:port] [--allow-host name]: --addr requires a value")
 			}
 			addr, args = args[1], args[2:]
+		case "--allow-host":
+			if len(args) < 2 {
+				return fmt.Errorf("usage: board serve [--addr host:port] [--allow-host name]: --allow-host requires a value")
+			}
+			for _, h := range strings.Split(args[1], ",") {
+				if h = strings.TrimSpace(h); h != "" {
+					allowHosts = append(allowHosts, h)
+				}
+			}
+			args = args[2:]
 		default:
 			return fmt.Errorf("board serve: unknown argument %q", args[0])
 		}
@@ -288,19 +299,41 @@ func runServe(args []string, stdout io.Writer) error {
 	} else if n > 0 {
 		fmt.Fprintf(stdout, "reconciled %d orphan agent run(s)\n", n)
 	}
+	allowed := allowedHosts(addr, allowHosts)
 	fmt.Fprintf(stdout, "board web UI: http://%s\n", addr)
-	// A non-loopback --addr is an explicit choice to serve that host, so accept
-	// it as a Host header too; loopback is always allowed. An unspecified bind
-	// (0.0.0.0 / ::) can be reached under any name, so the Host check is off.
+	if len(allowHosts) > 0 {
+		fmt.Fprintf(stdout, "accepting Host: %s (plus loopback)\n", strings.Join(allowHosts, ", "))
+	}
 	return http.ListenAndServe(addr, web.HandlerConfig(web.Config{
 		Store:        st,
-		AllowedHosts: []string{allowedHostFor(addr)},
+		AllowedHosts: allowed,
 	}))
 }
 
-// allowedHostFor maps a listen address to the extra Host header to accept:
-// the bound host, or "*" when the bind is unspecified and any name may reach it.
-func allowedHostFor(addr string) string {
+// allowedHosts builds the Host allowlist for a listen address. Loopback is
+// always accepted by the web layer, so this only covers the extras:
+//
+//   - explicit --allow-host values win outright. They are the way to bind
+//     0.0.0.0 for a reverse proxy while still pinning the Host header, so they
+//     must suppress the wildcard an unspecified bind would otherwise imply.
+//   - otherwise a non-loopback --addr is an explicit choice to serve that host,
+//     so accept it by name.
+//   - otherwise the bind is unspecified (0.0.0.0 / ::) and reachable under any
+//     name, leaving nothing to match against: "*" turns the check off.
+func allowedHosts(addr string, explicit []string) []string {
+	if len(explicit) > 0 {
+		out := append([]string{}, explicit...)
+		if h := bindHost(addr); h != "" && h != "*" {
+			out = append(out, h)
+		}
+		return out
+	}
+	return []string{bindHost(addr)}
+}
+
+// bindHost returns the host a listen address serves under, or "*" when the bind
+// is unspecified and therefore reachable under any name.
+func bindHost(addr string) string {
 	host := addr
 	if h, _, err := net.SplitHostPort(addr); err == nil {
 		host = h

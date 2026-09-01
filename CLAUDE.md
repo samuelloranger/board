@@ -47,6 +47,7 @@ test -z "$(gofmt -l .)"         # CI fails on any unformatted file
 ./board mcp                     # MCP server on stdio (what AI clients spawn)
 ./board serve                   # web UI + JSON API on 127.0.0.1:7420
 ./board serve --addr 0.0.0.0:9000
+./board serve --addr 0.0.0.0:7420 --allow-host board.example.com   # behind a reverse proxy
 ./board board                   # CLI: the three columns for the current project
 ./board setup [--yes]           # register the MCP server across detected clients
 ```
@@ -124,6 +125,11 @@ racing them into `SQLITE_BUSY`. Don't raise it.
   it, DNS rebinding onto the board's port arrives with `Origin == Host`, passes the mutation check, and the
   page can read the token straight out of the served HTML. `Config.AllowedHosts` widens it; `board serve`
   passes the `--addr` host, or `"*"` (check disabled) when the bind is unspecified like `0.0.0.0`.
+- **`--allow-host` is what you want behind a reverse proxy.** `--addr 0.0.0.0` alone sets `"*"` and turns the
+  Host check off, because an unspecified bind answers to any name. Passing `--allow-host board.example.com`
+  (repeatable, or comma-separated) suppresses that wildcard and pins the proxied name, so the listener is
+  wide but only the proxy's `Host` — plus loopback — is served. `allowedHosts` in `cmd/board/main.go` is
+  where the wildcard gets dropped; that suppression is the whole point of the flag.
 - The plugin hooks shell out to a `board` binary on `PATH` and parse hook JSON with `sed`, not `jq`, to
   avoid the dependency. They exit 0 unconditionally so a missing binary never breaks a Claude session.
 - `dist_release/`, `board`, and `*.db*` are gitignored.
