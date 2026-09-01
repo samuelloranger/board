@@ -6,29 +6,10 @@
     tasks = [],
     active = false,
     drop = false,
-    openMenu = null,
-    openAgentMenu = null,
-    selectedAgent = "cursor",
-    latestByTask = {},
-    startingIds = {},
-    pendingQuestions = [],
-    onOpen,
-    onToggleMenu,
-    onMove,
-    onArchive,
-    onRun,
-    onCancel,
-    onToggleAgentMenu,
-    onSelectAgent,
-    onDragStart,
     onDragOver,
     onDragLeave,
     onDrop,
   } = $props();
-
-  function hasPending(id) {
-    return pendingQuestions.some((q) => q.task_id === id);
-  }
 </script>
 
 <div
@@ -48,27 +29,34 @@
   </div>
   <div class="cards">
     {#each tasks as t (t.id)}
-      <TaskCard
-        task={t}
-        menuOpen={openMenu === t.id}
-        agentMenuOpen={openAgentMenu === t.id}
-        {selectedAgent}
-        run={latestByTask[t.id] ?? null}
-        starting={!!startingIds[t.id]}
-        hasPendingAsk={hasPending(t.id)}
-        {onOpen}
-        onToggleMenu={() => onToggleMenu(t.id)}
-        {onMove}
-        {onArchive}
-        {onRun}
-        {onCancel}
-        onToggleAgentMenu={() => onToggleAgentMenu(t.id)}
-        {onSelectAgent}
-        {onDragStart}
-      />
+      <TaskCard task={t} />
     {/each}
     {#if tasks.length === 0}
       <div class="empty">Nothing here</div>
     {/if}
   </div>
 </div>
+
+<style>
+  .col { display: none; flex-direction: column; }
+  .col:global(.active) { display: flex; }
+  .col-head { display: flex; align-items: center; gap: 8px; padding: 6px 2px 12px; }
+  .col-dot { width: 9px; height: 9px; border-radius: 50%; }
+  .col-head h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+  .col-head .count {
+    margin-left: auto; font-size: 12px; font-weight: 600; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .cards { display: flex; flex-direction: column; gap: 10px; min-height: 60px; }
+  @media (min-width: 768px) {
+    .col {
+      display: flex; background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 14px; padding: 12px;
+    }
+    .col:global(.drop) {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+    }
+    .col-head { padding: 4px 4px 12px; }
+  }
+</style>

@@ -70,3 +70,17 @@
     <button class="btn-primary" disabled={!title.trim()} onclick={onCreate}><Icon name="check" /><span>Create</span></button>
   </div>
 </div>
+
+<style>
+  .modal {
+    position: fixed; z-index: 50; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(440px, calc(100vw - 32px)); padding: 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    animation: pop .16s ease;
+  }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .modal-head h3 { margin: 0; font-size: 17px; font-weight: 700; }
+  @media (min-width: 768px) {
+    .modal { animation: pop .16s ease; }
+  }
+</style>

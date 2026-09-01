@@ -1,7 +1,14 @@
 <script>
   import "./styles.css";
-  import { AGENT_LABEL, COLUMNS } from "./lib/constants.js";
+  import { COLUMNS } from "./lib/constants.js";
   import { apiHeaders } from "./lib/api.js";
+  import {
+    boardUI,
+    latestRun,
+    setSelectedAgent,
+    wireBoardActions,
+  } from "./lib/board-ui.svelte.js";
+  import { detailUI, runUI } from "./lib/detail-ui.svelte.js";
   import Topbar from "./components/Topbar.svelte";
   import ProjectChips from "./components/ProjectChips.svelte";
   import HandoffLane from "./components/HandoffLane.svelte";
@@ -17,48 +24,17 @@
   let activeCol = $state("todo");
   let showActivity = $state(false);
   let showAdd = $state(false);
-  let openMenu = $state(null);
-  let openAgentMenu = $state(null); // task id | "detail" | null
   let dragOver = $state(null);
   let addTitle = $state("");
   let addDescription = $state("");
   let addPriority = $state("");
   let addProject = $state("");
   let unseen = $state(0);
-  let detail = $state(null);
-  let editing = $state(false);
-  let edit = $state({ title: "", description: "", priority: "", due_date: "", tags: "", project: "" });
-  let noteBody = $state("");
-  let seenNoteIds = $state(new Set());
-  let animNoteIds = $state({});
-  let pendingQuestions = $state([]);
-  let latestByTask = $state({});
-  let startingIds = $state({});
   let projectPaths = $state([]);
   let chipProjects = $state([]);
   let showProjects = $state(false);
-  let needPath = $state(null);
-  let pathInput = $state("");
-  let runError = $state("");
-  let answerDraft = $state("");
   let projectFilter = $state("*");
   let showNotifyBanner = $state(false);
-  let selectedAgent = $state(loadSelectedAgent());
-  let runFiles = $state([]);
-
-  function loadSelectedAgent() {
-    try {
-      const v = localStorage.getItem("board-default-agent");
-      if (v && AGENT_LABEL[v]) return v;
-    } catch {}
-    return "cursor";
-  }
-  function setSelectedAgent(key) {
-    if (!AGENT_LABEL[key]) return;
-    selectedAgent = key;
-    openAgentMenu = null;
-    try { localStorage.setItem("board-default-agent", key); } catch {}
-  }
 
   function applyTheme(t) {
     theme = t;
@@ -112,21 +88,14 @@
     handoffs = res.handoffs ?? [];
   }
   async function loadAgentState() {
-    pendingQuestions = await (await fetch("/api/questions?status=pending")).json();
+    boardUI.pendingQuestions = await (await fetch("/api/questions?status=pending")).json();
     const runs = await (await fetch("/api/runs")).json();
     const map = {};
     for (const r of runs ?? []) {
       if (map[r.task_id] == null) map[r.task_id] = r;
     }
-    latestByTask = map;
+    boardUI.latestByTask = map;
     projectPaths = await (await fetch("/api/projects/paths")).json();
-  }
-  function latestRun(id) {
-    return latestByTask[id] ?? null;
-  }
-  function pendingAskFor(id) {
-    if (id == null) return null;
-    return pendingQuestions.find((q) => q.task_id === id) ?? null;
   }
   function maybeShowNotifyBanner() {
     if (typeof Notification === "undefined") return;
@@ -148,7 +117,7 @@
   function notifyAsk(taskId, question) {
     if (typeof Notification === "undefined") return;
     if (Notification.permission !== "granted") return;
-    if (!document.hidden && detail?.id === taskId) return;
+    if (!document.hidden && detailUI.detail?.id === taskId) return;
     const n = new Notification("Agent asks", {
       body: String(question || "").slice(0, 80),
       tag: "board-ask-" + taskId,
@@ -170,11 +139,11 @@
   function isActivityEvent(e) {
     return e.kind !== "tool" && e.kind !== "run_progress";
   }
-  async function runTask(id, agent = selectedAgent) {
-    runError = "";
-    needPath = null;
+  async function runTask(id, agent = boardUI.selectedAgent) {
+    runUI.runError = "";
+    runUI.needPath = null;
     setSelectedAgent(agent);
-    startingIds = { ...startingIds, [id]: true };
+    boardUI.startingIds = { ...boardUI.startingIds, [id]: true };
     try {
       const resp = await fetch(`/api/tasks/${id}/run`, {
         method: "POST", headers: apiHeaders({ "Content-Type": "application/json" }),
@@ -183,56 +152,56 @@
       if (resp.status === 409) {
         const body = await resp.json();
         if (body.need_path) {
-          needPath = { project: body.project, taskId: id };
-          pathInput = "";
-          if (!detail || detail.id !== id) {
+          runUI.needPath = { project: body.project, taskId: id };
+          runUI.pathInput = "";
+          if (!detailUI.detail || detailUI.detail.id !== id) {
             const t = findTask(id);
             if (t) openDetail(t);
           }
           return;
         }
-        runError = body.error || "Conflict";
+        runUI.runError = body.error || "Conflict";
         return;
       }
       if (!resp.ok) {
-        runError = await resp.text();
+        runUI.runError = await resp.text();
         return;
       }
       await load();
-      if (detail?.id === id) await refreshDetail();
+      if (detailUI.detail?.id === id) await refreshDetail();
     } finally {
-      const next = { ...startingIds };
+      const next = { ...boardUI.startingIds };
       delete next[id];
-      startingIds = next;
+      boardUI.startingIds = next;
     }
   }
   async function savePathAndRun() {
-    if (!needPath || !pathInput.trim()) return;
-    const put = await fetch(`/api/projects/${encodeURIComponent(needPath.project)}/path`, {
+    if (!runUI.needPath || !runUI.pathInput.trim()) return;
+    const put = await fetch(`/api/projects/${encodeURIComponent(runUI.needPath.project)}/path`, {
       method: "PUT", headers: apiHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ path: pathInput.trim() }),
+      body: JSON.stringify({ path: runUI.pathInput.trim() }),
     });
     if (!put.ok) {
-      runError = await put.text();
+      runUI.runError = await put.text();
       return;
     }
-    const tid = needPath.taskId;
-    needPath = null;
+    const tid = runUI.needPath.taskId;
+    runUI.needPath = null;
     await runTask(tid);
   }
   async function cancelRun(id) {
     await fetch(`/api/tasks/${id}/run/cancel`, { method: "POST", headers: apiHeaders() });
     await load();
-    if (detail?.id === id) await refreshDetail();
+    if (detailUI.detail?.id === id) await refreshDetail();
   }
   async function submitAnswer(qid) {
-    const answer = answerDraft.trim();
+    const answer = detailUI.answerDraft.trim();
     if (!answer) return;
     await fetch(`/api/questions/${qid}/answer`, {
       method: "POST", headers: apiHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ answer }),
     });
-    answerDraft = "";
+    detailUI.answerDraft = "";
     await loadAgentState();
   }
   async function saveProjectPath(project, path) {
@@ -241,7 +210,7 @@
       body: JSON.stringify({ path }),
     });
     if (!put.ok) {
-      runError = await put.text();
+      runUI.runError = await put.text();
       return;
     }
     await loadAgentState();
@@ -251,7 +220,7 @@
     await loadAgentState();
   }
   async function move(id, status) {
-    openMenu = null;
+    boardUI.openMenu = null;
     await fetch(`/api/tasks/${id}/move`, {
       method: "POST", headers: apiHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ status }),
@@ -259,7 +228,7 @@
     await load();
   }
   async function archive(id) {
-    openMenu = null;
+    boardUI.openMenu = null;
     await fetch(`/api/tasks/${id}/archive`, { method: "POST", headers: apiHeaders() });
     await load();
   }
@@ -267,7 +236,7 @@
     e?.stopPropagation();
     await fetch(`/api/tasks/${id}/clear_handoff`, { method: "POST", headers: apiHeaders() });
     await load();
-    if (detail?.id === id) await refreshDetail();
+    if (detailUI.detail?.id === id) await refreshDetail();
   }
   async function createTask() {
     const title = addTitle.trim();
@@ -313,119 +282,127 @@
     return await resp.json();
   }
   async function openDetail(t, { skipURL = false, replaceURL = false } = {}) {
-    editing = false; noteBody = ""; runError = ""; needPath = null;
-    animNoteIds = {};
-    detail = t;
+    detailUI.editing = false;
+    detailUI.noteBody = "";
+    runUI.runError = "";
+    runUI.needPath = null;
+    detailUI.animNoteIds = {};
+    detailUI.detail = t;
     if (!skipURL) {
       if (taskIdFromURL() === t.id || replaceURL) setTaskURL(t.id, { replace: true });
       else setTaskURL(t.id);
     }
     const full = await fetchTask(t.id);
-    if (full && detail?.id === t.id) {
-      detail = full;
-      seenNoteIds = new Set((full.notes ?? []).map((n) => n.id));
-    } else if (!full && detail?.id === t.id && !t.title) {
+    if (full && detailUI.detail?.id === t.id) {
+      detailUI.detail = full;
+      detailUI.seenNoteIds = new Set((full.notes ?? []).map((n) => n.id));
+    } else if (!full && detailUI.detail?.id === t.id && !t.title) {
       closeDetail({ skipURL: false });
       return;
     } else {
-      seenNoteIds = new Set();
+      detailUI.seenNoteIds = new Set();
     }
-    if (detail?.id === t.id) await loadRunFilesForDetail();
+    if (detailUI.detail?.id === t.id) await loadRunFilesForDetail();
   }
   function applyNoteEntrance(notes) {
     const ids = (notes ?? []).map((n) => n.id);
-    const fresh = ids.filter((id) => !seenNoteIds.has(id));
-    seenNoteIds = new Set([...seenNoteIds, ...ids]);
+    const fresh = ids.filter((id) => !detailUI.seenNoteIds.has(id));
+    detailUI.seenNoteIds = new Set([...detailUI.seenNoteIds, ...ids]);
     if (!fresh.length) return;
-    const next = { ...animNoteIds };
+    const next = { ...detailUI.animNoteIds };
     for (const id of fresh) next[id] = true;
-    animNoteIds = next;
+    detailUI.animNoteIds = next;
     setTimeout(() => {
-      const cleared = { ...animNoteIds };
+      const cleared = { ...detailUI.animNoteIds };
       for (const id of fresh) delete cleared[id];
-      animNoteIds = cleared;
+      detailUI.animNoteIds = cleared;
     }, 420);
   }
   async function refreshDetail() {
-    if (!detail) return;
-    const full = await fetchTask(detail.id);
+    if (!detailUI.detail) return;
+    const full = await fetchTask(detailUI.detail.id);
     if (full) {
       applyNoteEntrance(full.notes);
-      detail = full;
+      detailUI.detail = full;
     } else {
-      const t = findTask(detail.id);
-      if (t) detail = t;
+      const t = findTask(detailUI.detail.id);
+      if (t) detailUI.detail = t;
     }
     await loadRunFilesForDetail();
   }
   async function loadRunFilesForDetail() {
-    if (!detail) {
-      runFiles = [];
+    if (!detailUI.detail) {
+      detailUI.runFiles = [];
       return;
     }
-    const r = latestRun(detail.id);
+    const r = latestRun(detailUI.detail.id);
     if (!r?.id) {
-      runFiles = [];
+      detailUI.runFiles = [];
       return;
     }
     try {
       const resp = await fetch(`/api/runs/${r.id}/files`);
       if (!resp.ok) {
-        runFiles = [];
+        detailUI.runFiles = [];
         return;
       }
-      runFiles = await resp.json() ?? [];
+      detailUI.runFiles = await resp.json() ?? [];
     } catch {
-      runFiles = [];
+      detailUI.runFiles = [];
     }
   }
   function closeDetail({ skipURL = false } = {}) {
-    detail = null; editing = false; needPath = null; runError = "";
-    seenNoteIds = new Set(); animNoteIds = {};
-    runFiles = [];
+    detailUI.detail = null;
+    detailUI.editing = false;
+    runUI.needPath = null;
+    runUI.runError = "";
+    detailUI.seenNoteIds = new Set();
+    detailUI.animNoteIds = {};
+    detailUI.runFiles = [];
     if (!skipURL && taskIdFromURL() != null) setTaskURL(null);
   }
   function startEdit() {
-    edit = {
-      title: detail.title ?? "",
-      description: detail.description ?? "",
-      priority: detail.priority ?? "",
-      due_date: detail.due_date ?? "",
-      tags: (detail.tags ?? []).join(", "),
-      project: detail.project ?? "",
+    const d = detailUI.detail;
+    detailUI.edit = {
+      title: d.title ?? "",
+      description: d.description ?? "",
+      priority: d.priority ?? "",
+      due_date: d.due_date ?? "",
+      tags: (d.tags ?? []).join(", "),
+      project: d.project ?? "",
     };
-    editing = true;
+    detailUI.editing = true;
   }
   async function saveEdit() {
-    const title = edit.title.trim();
+    const title = detailUI.edit.title.trim();
     if (!title) return;
-    const tags = edit.tags.split(",").map((s) => s.trim()).filter(Boolean);
-    await fetch(`/api/tasks/${detail.id}/update`, {
+    const tags = detailUI.edit.tags.split(",").map((s) => s.trim()).filter(Boolean);
+    await fetch(`/api/tasks/${detailUI.detail.id}/update`, {
       method: "POST", headers: apiHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
-        title, description: edit.description,
-        priority: edit.priority, due_date: edit.due_date, tags,
-        project: edit.project.trim(),
+        title, description: detailUI.edit.description,
+        priority: detailUI.edit.priority, due_date: detailUI.edit.due_date, tags,
+        project: detailUI.edit.project.trim(),
       }),
     });
     await load();
-    if (detail) await refreshDetail();
-    editing = false;
+    if (detailUI.detail) await refreshDetail();
+    detailUI.editing = false;
   }
   async function addNote() {
-    const body = noteBody.trim();
+    const body = detailUI.noteBody.trim();
     if (!body) return;
-    await fetch(`/api/tasks/${detail.id}/note`, {
+    await fetch(`/api/tasks/${detailUI.detail.id}/note`, {
       method: "POST", headers: apiHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ body }),
     });
-    noteBody = "";
+    detailUI.noteBody = "";
     await load();
-    if (detail) await refreshDetail();
+    if (detailUI.detail) await refreshDetail();
   }
   async function moveFromDetail(status) {
-    await move(detail.id, status);
-    if (detail) await refreshDetail();
+    await move(detailUI.detail.id, status);
+    if (detailUI.detail) await refreshDetail();
   }
 
   function onDragStart(e, id) { e.dataTransfer.setData("id", String(id)); e.dataTransfer.effectAllowed = "move"; }
@@ -439,6 +416,21 @@
     const t = findTask(e.task_id);
     return t ? t.title : "";
   }
+
+  wireBoardActions({
+    onOpen: openDetail,
+    onToggleMenu: (id) => { boardUI.openMenu = boardUI.openMenu === id ? null : id; },
+    onMove: move,
+    onArchive: archive,
+    onRun: (id) => { boardUI.openMenu = null; boardUI.openAgentMenu = null; runTask(id); },
+    onCancel: cancelRun,
+    onToggleAgentMenu: (id) => {
+      boardUI.openMenu = null;
+      boardUI.openAgentMenu = boardUI.openAgentMenu === id ? null : id;
+    },
+    onSelectAgent: (key, id) => { setSelectedAgent(key); runTask(id, key); },
+    onDragStart,
+  });
 
   $effect(() => {
     let saved = "dark";
@@ -464,7 +456,7 @@
       clearTimeout(loadTimer);
       loadTimer = setTimeout(async () => {
         await load();
-        if (detail) await refreshDetail();
+        if (detailUI.detail) await refreshDetail();
       }, 120);
     };
 
@@ -477,7 +469,7 @@
       }
       if (!syncing && ev.kind === "question" && ev.task_id) {
         notifyAsk(ev.task_id, ev.detail);
-        if (!detail) openDetail(findTask(ev.task_id) ?? { id: ev.task_id });
+        if (!detailUI.detail) openDetail(findTask(ev.task_id) ?? { id: ev.task_id });
       }
       scheduleLoad();
     };
@@ -486,8 +478,8 @@
     const onPop = () => {
       const id = taskIdFromURL();
       if (id) {
-        if (detail?.id !== id) openDetail(findTask(id) ?? { id }, { skipURL: true });
-      } else if (detail) {
+        if (detailUI.detail?.id !== id) openDetail(findTask(id) ?? { id }, { skipURL: true });
+      } else if (detailUI.detail) {
         closeDetail({ skipURL: true });
       }
     };
@@ -505,11 +497,11 @@
   function markAllSeen() { unseen = 0; }
 
   $effect(() => {
-    if (openMenu === null) return;
+    if (boardUI.openMenu === null) return;
     let remove = () => {};
     const timer = setTimeout(() => {
       const onDocClick = (e) => {
-        if (!e.target.closest(".menu") && !e.target.closest(".menu-btn")) openMenu = null;
+        if (!e.target.closest(".menu") && !e.target.closest(".menu-btn")) boardUI.openMenu = null;
       };
       window.addEventListener("click", onDocClick);
       remove = () => window.removeEventListener("click", onDocClick);
@@ -518,11 +510,11 @@
   });
 
   $effect(() => {
-    if (openAgentMenu === null) return;
+    if (boardUI.openAgentMenu === null) return;
     let remove = () => {};
     const timer = setTimeout(() => {
       const onDocClick = (e) => {
-        if (!e.target.closest(".run-split")) openAgentMenu = null;
+        if (!e.target.closest(".run-split")) boardUI.openAgentMenu = null;
       };
       window.addEventListener("click", onDocClick);
       remove = () => window.removeEventListener("click", onDocClick);
@@ -582,21 +574,6 @@
       tasks={board[c.key] ?? []}
       active={activeCol === c.key}
       drop={dragOver === c.key}
-      {openMenu}
-      {openAgentMenu}
-      {selectedAgent}
-      {latestByTask}
-      {startingIds}
-      {pendingQuestions}
-      onOpen={openDetail}
-      onToggleMenu={(id) => (openMenu = openMenu === id ? null : id)}
-      onMove={move}
-      onArchive={archive}
-      onRun={(id) => { openMenu = null; openAgentMenu = null; runTask(id); }}
-      onCancel={cancelRun}
-      onToggleAgentMenu={(id) => { openMenu = null; openAgentMenu = openAgentMenu === id ? null : id; }}
-      onSelectAgent={(key, id) => { setSelectedAgent(key); runTask(id, key); }}
-      {onDragStart}
       onDragOver={(e, key) => { e.preventDefault(); dragOver = key; }}
       onDragLeave={(key) => { if (dragOver === key) dragOver = null; }}
       {onDrop}
@@ -631,37 +608,59 @@
   />
 {/if}
 
-{#if detail}
+{#if detailUI.detail}
   <TaskDetail
-    {detail}
-    {editing}
-    bind:edit
-    bind:noteBody
-    bind:answerDraft
-    bind:pathInput
-    {animNoteIds}
     {projectPaths}
-    {runFiles}
-    {needPath}
-    {runError}
-    {openAgentMenu}
-    {selectedAgent}
-    run={latestRun(detail.id)}
-    starting={!!startingIds[detail.id]}
-    pendingAsk={pendingAskFor(detail.id)}
     onClose={closeDetail}
     onStartEdit={startEdit}
-    onCancelEdit={() => (editing = false)}
+    onCancelEdit={() => (detailUI.editing = false)}
     onSaveEdit={saveEdit}
+    onEditChange={(next) => (detailUI.edit = next)}
     onMove={moveFromDetail}
     onClearHandoff={clearHandoff}
-    onRun={(id) => { openAgentMenu = null; runTask(id); }}
+    onRun={(id) => { boardUI.openAgentMenu = null; runTask(id); }}
     onCancelRun={cancelRun}
-    onToggleAgentMenu={() => (openAgentMenu = openAgentMenu === "detail" ? null : "detail")}
+    onToggleAgentMenu={() => {
+      boardUI.openAgentMenu = boardUI.openAgentMenu === "detail" ? null : "detail";
+    }}
     onSelectAgent={(key, id) => { setSelectedAgent(key); runTask(id, key); }}
     onSavePathAndRun={savePathAndRun}
-    onCancelPath={() => (needPath = null)}
+    onCancelPath={() => (runUI.needPath = null)}
+    onPathInput={(v) => (runUI.pathInput = v)}
     onSubmitAnswer={submitAnswer}
+    onAnswerDraft={(v) => (detailUI.answerDraft = v)}
     onAddNote={addNote}
+    onNoteBody={(v) => (detailUI.noteBody = v)}
   />
 {/if}
+
+<style>
+  .notify-banner {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    margin: 8px 16px 0; padding: 10px 14px; border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border));
+    background: color-mix(in srgb, var(--amber) 10%, var(--surface));
+    font-size: 13px; color: var(--text);
+  }
+  .notify-actions { display: flex; gap: 8px; }
+  .segmented {
+    display: flex; gap: 4px; margin: 12px 16px; padding: 4px;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px;
+  }
+  .segmented button {
+    flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    min-height: 40px; border: none; border-radius: 9px; background: transparent;
+    color: var(--muted); font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: background .15s ease, color .15s ease;
+  }
+  .segmented button:global(.active) { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .seg-count {
+    font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+    background: var(--surface-3); font-variant-numeric: tabular-nums;
+  }
+  .board { padding: 0 16px 24px; }
+  @media (min-width: 768px) {
+    .segmented { display: none; }
+    .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 8px 24px 32px; }
+  }
+</style>

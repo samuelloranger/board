@@ -40,3 +40,32 @@
     {/each}
   </section>
 {/if}
+
+<style>
+  .proj-filter {
+    display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 16px 0;
+  }
+  .proj-filter button {
+    font-family: inherit; font-size: 12px; font-weight: 600; padding: 5px 10px;
+    border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--muted); cursor: pointer;
+  }
+  .proj-filter button:global(.active) {
+    color: var(--prog); border-color: color-mix(in srgb, var(--prog) 45%, var(--border));
+    background: color-mix(in srgb, var(--prog) 12%, var(--surface));
+  }
+  .projects-panel {
+    margin: 0 16px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); display: flex; flex-direction: column; gap: 8px;
+  }
+  .projects-panel .lane-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 13px; font-weight: 600; color: var(--muted);
+  }
+  .proj-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .proj-name { font-size: 12px; color: var(--amber); min-width: 72px; }
+  .proj-path {
+    flex: 1; min-width: 180px; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  }
+</style>
