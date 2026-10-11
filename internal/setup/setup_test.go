@@ -68,6 +68,29 @@ func TestInstallSettingsHookMergesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestInstallSettingsHookReplacesLegacyBoardHook(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	legacy := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo 'BOARD (always on): old rules'"}]},{"hooks":[{"type":"command","command":"echo keep-me"}]}]}}`
+	if err := os.WriteFile(p, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallSettingsHook(p); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	groups := m["hooks"].(map[string]any)["SessionStart"].([]any)
+	if len(groups) != 2 || strings.Contains(string(raw), "old rules") || !strings.Contains(string(raw), "echo keep-me") {
+		t.Fatalf("legacy board hook was not replaced while preserving unrelated hook: %s", raw)
+	}
+}
+
 func TestInstallClaudeMdInsertsAndReplacesInPlace(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "CLAUDE.md")
 	os.WriteFile(p, []byte("# My rules\n\nkeep this line\n"), 0o644)
@@ -87,7 +110,7 @@ func TestInstallClaudeMdInsertsAndReplacesInPlace(t *testing.T) {
 	if strings.Count(s, boardMdStart) != 1 || strings.Count(s, boardMdEnd) != 1 {
 		t.Fatalf("markers should appear exactly once:\n%s", s)
 	}
-	if !strings.Contains(s, "Board / Kanban (ALWAYS ON)") {
+	if !strings.Contains(s, "Board / Kanban") {
 		t.Fatal("rules block missing")
 	}
 }

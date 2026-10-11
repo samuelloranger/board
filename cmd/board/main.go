@@ -378,14 +378,21 @@ func runSetup(args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "  configured %s -> %s\n", c.Name, c.Path)
 	}
 
-	// Install the "always keep the board updated" rules into Claude Code
-	// (SessionStart hook + CLAUDE.md block) so every session tracks the board
-	// automatically.
+	// Install selective board-tracking guidance into Claude Code
+	// (SessionStart hook + CLAUDE.md block).
 	if yes || askYes(stdout, fmt.Sprintf("Install board auto-update rules into Claude Code (%s)?", filepath.Join(home, ".claude"))) {
 		if err := setup.InstallClaudeRules(home); err != nil {
 			fmt.Fprintf(stdout, "  FAILED board auto-update rules: %v\n", err)
 		} else {
 			fmt.Fprintf(stdout, "  installed board auto-update rules -> %s\n", filepath.Join(home, ".claude"))
+		}
+	}
+
+	if yes || askYes(stdout, fmt.Sprintf("Install selective board rules into Codex (%s)?", filepath.Join(home, ".codex", "hooks.json"))) {
+		if err := setup.InstallCodexRules(home); err != nil {
+			fmt.Fprintf(stdout, "  FAILED Codex board rules: %v\n", err)
+		} else {
+			fmt.Fprintf(stdout, "  installed Codex board rules -> %s\n", filepath.Join(home, ".codex", "hooks.json"))
 		}
 	}
 

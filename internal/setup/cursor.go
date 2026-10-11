@@ -13,10 +13,9 @@ const cursorBoardAllow = "Mcp(board:*)"
 const cursorSkillMarkdown = "---\n" +
 	"name: board\n" +
 	"description: >-\n" +
-	"  Use to track multi-step work on a persistent kanban board. Create a task when\n" +
-	"  starting non-trivial work, move it across todo/in_progress/done as you progress,\n" +
-	"  and record findings as notes. Call resume at session start; use handoff to park\n" +
-	"  work for another agent or a human.\n" +
+	"  Use to track durable work needing a record or later handoff. Create a task\n" +
+	"  when requested or for a concrete follow-up that will outlive this session.\n" +
+	"  Resume tracked work and record meaningful outcomes as notes.\n" +
 	"---\n" +
 	"\n" +
 	"# Using the board\n" +
@@ -24,17 +23,17 @@ const cursorSkillMarkdown = "---\n" +
 	"You have a kanban board via the `board` MCP server. Use it to persist work across sessions and coordinate with other agents.\n" +
 	"\n" +
 	"## When to use\n" +
-	"- Starting multi-step work → `create_task` (title + short description). It auto-scopes to the current project.\n" +
-	"- Beginning a task → `move_task` to `in_progress`.\n" +
-	"- Finishing → `add_note` (what changed + how verified), then `move_task` to `done`.\n" +
-	"- Learning something worth remembering → `add_note` on the task.\n" +
-	"- Reviewing state → `get_board` (current project) or `list_tasks`.\n" +
-	"- **Starting a session** → call `resume` first to restore in-progress work and pick up anything handed to you.\n" +
+	"- User asks to track work, or a concrete independent follow-up will outlive this session → `create_task` (title + short description).\n" +
+	"- Beginning tracked work → `move_task` to `in_progress` once.\n" +
+	"- Finishing tracked work → `add_note` (outcome + verification), then `move_task` to `done`.\n" +
+	"- Meaningful finding or decision on a tracked task → `add_note`.\n" +
+	"- Board state needed to choose work → `get_board` or `list_tasks`.\n" +
+	"- **Resuming tracked work** → call `resume` to restore in-progress work and handoffs.\n" +
 	"- **Blocked / needs another agent or a human** → `handoff(id, to, reason)` with `to` = the receiver (`human`, `codex`, `claude`, …) and a clear reason.\n" +
 	"- **Need a quick human answer mid-run (esp. if launched from the board UI)** → `ask_user(task_id, question)` and wait for the web UI reply.\n" +
 	"\n" +
 	"## Rules\n" +
-	"- One task per meaningful unit of work. Don't create tasks for trivial one-liners.\n" +
+	"- Do not create tasks for one-off questions, small edits, routine investigation steps, or incidental findings. Put those in the response or an existing task.\n" +
 	"- Keep exactly one task `in_progress` at a time when possible.\n" +
 	"- Archive (not delete) completed work you want to keep a record of: `archive_task`.\n" +
 	"- File paths in notes are repo-relative only — never absolute or home paths.\n"
@@ -45,18 +44,16 @@ const cursorRuleMarkdown = "---\n" +
 	"alwaysApply: true\n" +
 	"---\n" +
 	"\n" +
-	"# Board / Kanban (ALWAYS ON)\n" +
+	"# Board / Kanban\n" +
 	"\n" +
-	"The `board` MCP server is the source of truth for task tracking. In every session, keep the board continuously updated:\n" +
+	"The `board` MCP server tracks durable work that needs a record or later handoff. Use an existing task when one covers the request:\n" +
 	"\n" +
-	"- Starting a task → `move_task` to `in_progress` before touching code.\n" +
-	"- Finishing a task → `add_note` (what changed + how verified), then `move_task` to `done`.\n" +
-	"- New work surfaced mid-session → `create_task` immediately.\n" +
-	"- Progress/findings mid-task → `add_note` as you go (repo-relative paths only — never absolute or home paths).\n" +
-	"- Before deciding what's next → `get_board` / `list_tasks`.\n" +
-	"- Session start → `resume` to restore in-progress work and handoffs.\n" +
+	"- Create a task only when the user asks to track work or a concrete, independently actionable follow-up will outlive this session.\n" +
+	"- Do not create tasks for one-off questions, small edits, routine investigation steps, or incidental findings; put those in the response or an existing task.\n" +
+	"- For tracked work, move to `in_progress` once, note meaningful outcomes (repo-relative paths only), and move to `done` when finished.\n" +
+	"- Read the board or call `resume` when resuming tracked work or when board state is needed to choose work. Otherwise, no board call is needed.\n" +
 	"\n" +
-	"Never let the board drift from reality.\n"
+	"Keep tracked tasks accurate.\n"
 
 // InstallCursorIntegration installs the board skill, always-on rule, Agent CLI
 // MCP allowlist, and afterFileEdit hook under ~/.cursor. All are idempotent.

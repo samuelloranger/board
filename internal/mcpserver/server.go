@@ -84,7 +84,7 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "create_task",
-		Description: "Create a kanban task. status defaults to 'todo'. project scopes the task (omit to use the current project). priority is low|medium|high. tags is a list. due_date is ISO8601.",
+		Description: "Create a durable, independently actionable kanban task when the user asks to track work or a concrete follow-up will outlive this session. Do not create tasks for one-off questions, small edits, routine steps, or incidental findings. status defaults to 'todo'. project scopes the task (omit for current project). priority is low|medium|high. tags is a list. due_date is ISO8601.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
 		Title       string   `json:"title"`
 		Description string   `json:"description,omitempty"`
@@ -228,7 +228,7 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "add_note", Description: "Append a note (progress/finding) to a task's activity log.",
+		Name: "add_note", Description: "Record a meaningful outcome, decision, or verification on an existing task. Avoid notes for routine tool calls or minor progress.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
 		ID   int64  `json:"id"`
 		Body string `json:"body"`
@@ -242,7 +242,7 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_board",
-		Description: "Return tasks grouped into todo/in_progress/done columns for a project (omit for current project; pass '*' for all projects). Each task is id, title, status, priority, due_date, handoff_to — call get_task for a description or notes. Set verbose to return full tasks instead.",
+		Description: "Read board state when resuming tracked work or choosing work from the board; routine requests need no board read. Returns todo/in_progress/done for a project (omit for current project; pass '*' for all projects). Each task is id, title, status, priority, due_date, handoff_to — call get_task for a description or notes. Set verbose for full tasks.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
 		Project string `json:"project,omitempty"`
 		Verbose bool   `json:"verbose,omitempty"`
@@ -292,7 +292,7 @@ func BuildServer(st *store.Store, def *string) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "resume",
-		Description: "Restore working context in one call: returns in_progress tasks (with notes) and any tasks handed off to you, for the current project (omit project) or a named one (pass '*' for all). Call this at the start of a session.",
+		Description: "Restore context when resuming tracked work or checking handoffs: returns in_progress tasks (with notes) and tasks handed off to you, for the current project (omit project) or a named one (pass '*' for all). Routine sessions need no board call.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, a struct {
 		Project string `json:"project,omitempty"`
 	}) (*mcp.CallToolResult, any, error) {

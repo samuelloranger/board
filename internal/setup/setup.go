@@ -87,7 +87,9 @@ func removeTOMLBlock(content, header string) string {
 //   3. a marker-delimited rules block in ~/.claude/CLAUDE.md (the instruction)
 // All are idempotent — re-running setup replaces the board entries in place.
 
-const boardHookMarker = "BOARD (always on)"
+const boardHookMarker = "BOARD (selective)"
+
+const legacyBoardHookMarker = "BOARD (always on)"
 
 const claudePostToolUseMarker = "board-post-tool-use.sh"
 
@@ -111,23 +113,26 @@ const (
 	boardMdEnd   = "<!-- BOARD_RULES_END -->"
 )
 
-const boardRulesMarkdown = "## Board / Kanban (ALWAYS ON)\n\n" +
-	"The `board` MCP server is the source of truth for task tracking. In every session, keep the board continuously updated:\n\n" +
-	"- Starting a task → `move_task` to `in_progress` before touching code.\n" +
-	"- Finishing a task → `add_note` (what changed + how verified), then `move_task` to `done`.\n" +
-	"- New work surfaced mid-session → `create_task` immediately.\n" +
-	"- Progress/findings mid-task → `add_note` as you go (repo-relative paths only — never absolute or home paths).\n" +
-	"- Before deciding what's next → `get_board` / `list_tasks`.\n\n" +
-	"If a board tool isn't loaded, load it via ToolSearch (`mcp__board__*`). Never let the board drift from reality.\n"
+const boardRulesMarkdown = "## Board / Kanban\n\n" +
+	"The `board` MCP server tracks durable work that needs a record or a later handoff. Use an existing task when one covers the request.\n\n" +
+	"- Create a task only when the user asks to track work or a concrete, independently actionable follow-up will outlive this session.\n" +
+	"- Do not create tasks for one-off questions, small edits, routine investigation steps, or incidental findings. Put those in the response or an existing task.\n" +
+	"- For tracked work, move the task to `in_progress` once, note meaningful outcomes (repo-relative paths only), and move it to `done` when finished.\n" +
+	"- Read the board when resuming tracked work or when board state is needed to choose work. Otherwise, no board call is needed.\n\n" +
+	"If a board tool is needed but not loaded, load it via ToolSearch (`mcp__board__*`).\n"
 
 // boardHookCommand builds the SessionStart hook shell command. The JSON is
 // marshaled (not hand-written) so quoting is always correct, then single-quoted
 // for the shell.
 func boardHookCommand() string {
-	ctx := "BOARD (always on): the `board` MCP is the source of truth for tasks. " +
-		"Keep it updated in real time — move_task to in_progress when starting a task, " +
-		"add_note + move_task to done when finishing, create_task for new work surfaced mid-session. " +
-		"Check get_board before deciding next steps. If board tools are not loaded, load them via ToolSearch (mcp__board__*)."
+	ctx := "BOARD (selective): track durable work needing a record or handoff. " +
+		"Use an existing task when it covers the request. Create a task only when the user asks to track work " +
+		"or a concrete, independently actionable follow-up will outlive this session. " +
+		"Do not create tasks for one-off questions, small edits, routine investigation steps, or incidental findings; " +
+		"put those in the response or an existing task. For tracked work, move to in_progress once, " +
+		"note meaningful outcomes, then move to done. Read the board when resuming tracked work or when " +
+		"board state is needed to choose work. Otherwise, no board call is needed. " +
+		"Load board tools via ToolSearch (mcp__board__*) only when needed."
 	payload := map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":     "SessionStart",
@@ -156,6 +161,11 @@ func InstallClaudeRules(home string) error {
 		return err
 	}
 	return InstallClaudeMd(filepath.Join(dir, "CLAUDE.md"))
+}
+
+// InstallCodexRules installs the selective SessionStart hook under ~/.codex.
+func InstallCodexRules(home string) error {
+	return InstallSettingsHook(filepath.Join(home, ".codex", "hooks.json"))
 }
 
 // InstallClaudePostToolUse writes hooks/board-post-tool-use.sh and upserts a
@@ -204,9 +214,12 @@ func InstallClaudePostToolUse(claudeDir string) error {
 	return writeFileAtomic(settingsPath, mustJSON(m))
 }
 
-// InstallSettingsHook upserts the board SessionStart hook into a settings.json,
+// InstallSettingsHook upserts the board SessionStart hook into a hooks JSON file,
 // preserving all other settings and any other SessionStart hooks.
 func InstallSettingsHook(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
 	m := map[string]any{}
 	if raw, err := os.ReadFile(path); err == nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, &m); err != nil {
@@ -220,7 +233,7 @@ func InstallSettingsHook(path string) error {
 	var groups []any
 	if existing, ok := hooks["SessionStart"].([]any); ok {
 		for _, g := range existing {
-			if !groupHasMarker(g, boardHookMarker) { // drop our prior hook, keep others
+			if !groupHasMarker(g, boardHookMarker) && !groupHasMarker(g, legacyBoardHookMarker) { // drop our prior hook, keep others
 				groups = append(groups, g)
 			}
 		}
