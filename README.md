@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.svg" width="96" alt="board logo" />
+</p>
+
 <h1 align="center">board</h1>
 
 <p align="center">
