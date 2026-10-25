@@ -45,7 +45,7 @@ git push origin v0.2.1
 gh run watch $(gh run list --workflow release --limit 1 --json databaseId -q '.[0].databaseId')
 ```
 
-The `release` workflow (single `build` job, ubuntu-latest, Go 1.26 + Bun) then:
+The `release` workflow (single `build` job, ubuntu-latest, Go 1.27 + Bun) then:
 
 1. builds `internal/web/ui` with Bun (CI's copy of `dist/`, not yours — but the Go embed uses whatever
    is on disk after that step, which is why a stale committed `dist/` only matters for local builds and

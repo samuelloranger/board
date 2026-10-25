@@ -26,7 +26,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.27"
       - name: Build web UI
         working-directory: internal/web/ui
         run: bun install && bun run build

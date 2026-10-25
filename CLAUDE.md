@@ -34,7 +34,7 @@ dependency — the store is the only shared state, and all three can run at once
 
 ## Commands
 
-Go 1.26.4, module `github.com/samuelloranger/board`. There is no Makefile — these are the real commands
+Go 1.27.3, module `github.com/samuelloranger/board`. There is no Makefile — these are the real commands
 (they mirror `.github/workflows/ci.yml`).
 
 ```bash
