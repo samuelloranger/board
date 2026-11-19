@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/samuelloranger/board/internal/agent"
 	"github.com/samuelloranger/board/internal/store"
@@ -593,8 +594,14 @@ func handleRunCancel(w http.ResponseWriter, r *http.Request, st *store.Store, ta
 	if ok && entry.kill != nil {
 		_ = entry.kill()
 	} else if run.PID != nil {
-		if p, err := os.FindProcess(*run.PID); err == nil {
-			_ = p.Kill()
+		// Restarted server: the procs map is empty, so kill via the pid
+		// stored on the run. The agent leads its own process group (the
+		// runner sets Setpgid), so -pid takes down the whole tree; fall
+		// back to the direct child for runs started by an older binary.
+		if syscall.Kill(-*run.PID, syscall.SIGKILL) != nil {
+			if p, err := os.FindProcess(*run.PID); err == nil {
+				_ = p.Kill()
+			}
 		}
 	}
 	finished, err := st.FinishRun(run.ID, "killed", nil, "cancelled from board UI")

@@ -124,6 +124,9 @@ func startCLI(binName, missingHint string, args []string, opts StartOpts, env []
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = opts.Cwd
+	// Own process group so a kill can take down the whole tree: agent CLIs
+	// spawn shells whose children would otherwise survive a cancel.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if env != nil {
 		cmd.Env = env
 	}
@@ -196,6 +199,14 @@ func startCLI(binName, missingHint string, args []string, opts StartOpts, env []
 			if cmd.Process == nil {
 				return nil
 			}
+			// The child leads its own process group (Setpgid above), so a
+			// negative pid signals the whole tree: shells the agent spawned
+			// die with the CLI process instead of surviving the cancel.
+			if err := syscall.Kill(-pid, syscall.SIGTERM); err == nil {
+				return nil
+			}
+			// The group is gone (nothing left to kill) or could not be
+			// signaled — the direct child is all that is still reachable.
 			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 				return cmd.Process.Kill()
 			}
