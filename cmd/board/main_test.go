@@ -60,6 +60,29 @@ func TestBindHost(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackBind(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1:7420":   true,
+		"[::1]:7420":       true,
+		"localhost:7420":   true,
+		"0.0.0.0:9000":     false,
+		"[::]:9000":        false,
+		":7420":            false,
+		"192.168.1.5:9000": false,
+	}
+	for addr, want := range cases {
+		if got := isLoopbackBind(addr); got != want {
+			t.Errorf("isLoopbackBind(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+func TestServeRunTokenRequiresValue(t *testing.T) {
+	if err := run([]string{"serve", "--run-token"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("expected error for --run-token without a value")
+	}
+}
+
 func TestAllowedHosts(t *testing.T) {
 	cases := []struct {
 		name     string

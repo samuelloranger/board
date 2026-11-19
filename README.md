@@ -77,9 +77,13 @@ wider but keep the name pinned — otherwise `--addr 0.0.0.0` answers to any hos
 board serve --addr 0.0.0.0:7420 --allow-host board.example.com
 ```
 
-There is still **no authentication**: anyone who can reach the port has full read/write, and
-`POST /api/tasks/{id}/run` launches a coding agent on that machine. Put a proxy with real auth in front,
-or keep it on loopback / a private tunnel.
+Launching an agent is gated by a **run token**: the Run endpoints answer 401 unless the request
+carries it. `board serve` gates them automatically on any non-loopback bind and prints the generated
+token to the console — pin it with `--run-token <value>` (that flag also gates a loopback serve). The
+web UI asks for the token once and remembers it.
+
+Board data still has **no authentication** — anyone who can reach the port has full read/write. Put a
+proxy with real auth in front, or keep it on loopback / a private tunnel.
 
 ## MCP tools
 

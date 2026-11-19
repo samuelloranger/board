@@ -10,10 +10,12 @@ export const detailUI = $state({
   runFiles: [],
 });
 
-/** Run-prompt state (path prompt + errors) owned beside the detail panel. */
+/** Run-prompt state (path/token prompts + errors) owned beside the detail panel. */
 export const runUI = $state({
   needPath: null,
   pathInput: "",
+  needToken: null,
+  tokenInput: "",
   runError: "",
 });
 
@@ -28,5 +30,7 @@ export function resetDetailUI() {
   detailUI.runFiles = [];
   runUI.needPath = null;
   runUI.pathInput = "";
+  runUI.needToken = null;
+  runUI.tokenInput = "";
   runUI.runError = "";
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -262,16 +264,17 @@ func cmdRunFile(args []string, stdout io.Writer) error {
 func runServe(args []string, stdout io.Writer) error {
 	addr := "127.0.0.1:7420"
 	var allowHosts []string
+	runToken := ""
 	for len(args) > 0 {
 		switch args[0] {
 		case "--addr":
 			if len(args) < 2 {
-				return fmt.Errorf("usage: board serve [--addr host:port] [--allow-host name]: --addr requires a value")
+				return fmt.Errorf("usage: board serve [--addr host:port] [--allow-host name] [--run-token token]: --addr requires a value")
 			}
 			addr, args = args[1], args[2:]
 		case "--allow-host":
 			if len(args) < 2 {
-				return fmt.Errorf("usage: board serve [--addr host:port] [--allow-host name]: --allow-host requires a value")
+				return fmt.Errorf("usage: board serve [--addr host:port] [--allow-host name] [--run-token token]: --allow-host requires a value")
 			}
 			for _, h := range strings.Split(args[1], ",") {
 				if h = strings.TrimSpace(h); h != "" {
@@ -279,6 +282,11 @@ func runServe(args []string, stdout io.Writer) error {
 				}
 			}
 			args = args[2:]
+		case "--run-token":
+			if len(args) < 2 {
+				return fmt.Errorf("usage: board serve [--addr host:port] [--allow-host name] [--run-token token]: --run-token requires a value")
+			}
+			runToken, args = args[1], args[2:]
 		default:
 			return fmt.Errorf("board serve: unknown argument %q", args[0])
 		}
@@ -300,6 +308,17 @@ func runServe(args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "reconciled %d orphan agent run(s)\n", n)
 	}
 	allowed := allowedHosts(addr, allowHosts)
+	// Launching an agent runs arbitrary code on this machine, so a bind that
+	// others can reach must not accept run requests from just anyone. Gate the
+	// run endpoints behind a token; generate one when the operator did not pin
+	// it — the serve console is the trusted side to read it from.
+	if runToken == "" && !isLoopbackBind(addr) {
+		runToken = randomToken()
+		fmt.Fprintln(stdout, "generated run token (pin it with --run-token):", runToken)
+	}
+	if runToken != "" {
+		fmt.Fprintln(stdout, "run token required to launch agents (the web UI asks for it once)")
+	}
 	fmt.Fprintf(stdout, "board web UI: http://%s\n", addr)
 	if len(allowHosts) > 0 {
 		fmt.Fprintf(stdout, "accepting Host: %s (plus loopback)\n", strings.Join(allowHosts, ", "))
@@ -307,7 +326,31 @@ func runServe(args []string, stdout io.Writer) error {
 	return http.ListenAndServe(addr, web.HandlerConfig(web.Config{
 		Store:        st,
 		AllowedHosts: allowed,
+		RunToken:     runToken,
 	}))
+}
+
+// isLoopbackBind reports whether addr serves loopback only. Unspecified binds
+// (":7420", 0.0.0.0, ::) are reachable from the network, so they are not
+// loopback — the same reading allowedHosts gives them the wildcard.
+func isLoopbackBind(addr string) bool {
+	h := bindHost(addr)
+	if h == "*" {
+		return false
+	}
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+func randomToken() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("board: run token: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // allowedHosts builds the Host allowlist for a listen address. Loopback is

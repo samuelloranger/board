@@ -29,6 +29,9 @@
     onSavePathAndRun,
     onCancelPath,
     onPathInput,
+    onSaveToken,
+    onCancelToken,
+    onTokenInput,
     onSubmitAnswer,
     onAnswerDraft,
     onAddNote,
@@ -44,6 +47,8 @@
   const animNoteIds = $derived(detailUI.animNoteIds);
   const runFiles = $derived(detailUI.runFiles);
   const needPath = $derived(runUI.needPath);
+  const needToken = $derived(runUI.needToken);
+  const tokenInput = $derived(runUI.tokenInput);
   const runError = $derived(runUI.runError);
   const run = $derived(detail ? latestRun(detail.id) : null);
   const starting = $derived(detail ? isStarting(detail.id) : false);
@@ -207,6 +212,25 @@
             <div class="modal-foot">
               <button class="btn-ghost" onclick={onCancelPath}>Cancel</button>
               <button class="btn-primary" disabled={!pathInput.trim()} onclick={onSavePathAndRun}>Save &amp; Run</button>
+            </div>
+          </div>
+        {/if}
+        {#if needToken && needToken.taskId === detail.id}
+          <div class="path-prompt">
+            <p>This board needs a <strong>run token</strong> before an agent can be launched or controlled. Find it in the <code>board serve</code> console output.</p>
+            <input
+              type="password"
+              autocomplete="off"
+              value={tokenInput}
+              placeholder="run token"
+              oninput={(e) => onTokenInput(e.currentTarget.value)}
+              onkeydown={(e) => { if (e.key === "Enter") onSaveToken(); }}
+            />
+            <div class="modal-foot">
+              <button class="btn-ghost" onclick={onCancelToken}>Cancel</button>
+              <button class="btn-primary" disabled={!tokenInput.trim()} onclick={onSaveToken}>
+                Save {needToken.agent ? "& Run" : "& Retry"}
+              </button>
             </div>
           </div>
         {/if}

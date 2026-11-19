@@ -1,7 +1,7 @@
 <script>
   import "./styles.css";
   import { COLUMNS } from "./lib/constants.js";
-  import { apiHeaders } from "./lib/api.js";
+  import { apiHeaders, runTokenHeaders, setStoredRunToken } from "./lib/api.js";
   import {
     boardUI,
     latestRun,
@@ -142,13 +142,26 @@
   async function runTask(id, agent = boardUI.selectedAgent) {
     runUI.runError = "";
     runUI.needPath = null;
+    runUI.needToken = null;
     setSelectedAgent(agent);
     boardUI.startingIds = { ...boardUI.startingIds, [id]: true };
     try {
       const resp = await fetch(`/api/tasks/${id}/run`, {
-        method: "POST", headers: apiHeaders({ "Content-Type": "application/json" }),
+        method: "POST", headers: apiHeaders({ "Content-Type": "application/json", ...runTokenHeaders() }),
         body: JSON.stringify({ agent }),
       });
+      if (resp.status === 401) {
+        const body = await resp.json().catch(() => ({}));
+        if (body.need_run_token) {
+          runUI.needToken = { taskId: id, agent };
+          runUI.tokenInput = "";
+          if (!detailUI.detail || detailUI.detail.id !== id) {
+            const t = findTask(id);
+            if (t) openDetail(t);
+          }
+          return;
+        }
+      }
       if (resp.status === 409) {
         const body = await resp.json();
         if (body.need_path) {
@@ -189,8 +202,29 @@
     runUI.needPath = null;
     await runTask(tid);
   }
+  async function saveTokenAndRetry() {
+    const token = runUI.tokenInput.trim();
+    if (!token || !runUI.needToken) return;
+    setStoredRunToken(token);
+    const { taskId, agent } = runUI.needToken;
+    runUI.needToken = null;
+    if (agent) await runTask(taskId, agent);
+    else await cancelRun(taskId);
+  }
   async function cancelRun(id) {
-    await fetch(`/api/tasks/${id}/run/cancel`, { method: "POST", headers: apiHeaders() });
+    const resp = await fetch(`/api/tasks/${id}/run/cancel`, { method: "POST", headers: apiHeaders(runTokenHeaders()) });
+    if (resp.status === 401) {
+      const body = await resp.json().catch(() => ({}));
+      if (body.need_run_token) {
+        runUI.needToken = { taskId: id, agent: null };
+        runUI.tokenInput = "";
+        if (!detailUI.detail || detailUI.detail.id !== id) {
+          const t = findTask(id);
+          if (t) openDetail(t);
+        }
+        return;
+      }
+    }
     await load();
     if (detailUI.detail?.id === id) await refreshDetail();
   }
@@ -627,6 +661,9 @@
     onSavePathAndRun={savePathAndRun}
     onCancelPath={() => (runUI.needPath = null)}
     onPathInput={(v) => (runUI.pathInput = v)}
+    onSaveToken={saveTokenAndRetry}
+    onCancelToken={() => (runUI.needToken = null)}
+    onTokenInput={(v) => (runUI.tokenInput = v)}
     onSubmitAnswer={submitAnswer}
     onAnswerDraft={(v) => (detailUI.answerDraft = v)}
     onAddNote={addNote}

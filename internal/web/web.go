@@ -37,6 +37,10 @@ type Config struct {
 	// "*" disables the Host check entirely (an unspecified bind like 0.0.0.0
 	// can be reached under any name, so there is nothing to match against).
 	AllowedHosts []string
+	// RunToken, when set, gates the agent endpoints (POST /api/tasks/{id}/run
+	// and /run/cancel): requests must carry it in X-Run-Token. Empty means no
+	// gate (loopback default).
+	RunToken string
 }
 
 // procEntry holds a kill func for an in-flight agent process.
@@ -58,9 +62,10 @@ func HandlerConfig(cfg Config) http.Handler {
 	}
 
 	var (
-		mu    sync.Mutex
-		procs = map[int64]procEntry{}
-		hub   = newEventHub(st)
+		mu       sync.Mutex
+		procs    = map[int64]procEntry{}
+		hub      = newEventHub(st)
+		runToken = cfg.RunToken
 	)
 
 	resolveRunner := func(name string) (agent.Runner, error) {
@@ -213,12 +218,18 @@ func HandlerConfig(cfg Config) http.Handler {
 		if !ok {
 			return
 		}
+		if !checkRunToken(w, r, runToken) {
+			return
+		}
 		handleRun(w, r, st, resolveRunner, id, &mu, procs)
 	})
 
 	mux.HandleFunc("POST /api/tasks/{id}/run/cancel", func(w http.ResponseWriter, r *http.Request) {
 		id, ok := pathID(w, r)
 		if !ok {
+			return
+		}
+		if !checkRunToken(w, r, runToken) {
 			return
 		}
 		handleRunCancel(w, r, st, id, &mu, procs)

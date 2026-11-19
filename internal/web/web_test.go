@@ -333,6 +333,73 @@ func TestRunRejectsUnknownAgent(t *testing.T) {
 	}
 }
 
+func TestRunRequiresRunToken(t *testing.T) {
+	st := newStore(t)
+	p := "board"
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t", Project: &p})
+	st.SetProjectPath("board", t.TempDir())
+	fake := &agent.FakeRunner{}
+	srv := httptest.NewServer(newHandlerCfg(Config{Store: st, Runner: fake, RunToken: "sekrit"}))
+	defer srv.Close()
+	url := srv.URL + "/api/tasks/" + strconv.FormatInt(tk.ID, 10) + "/run"
+
+	// Missing or wrong token: 401 with the flag the UI prompts on.
+	for _, tok := range []string{"", "wrong"} {
+		req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(`{"agent":"cursor"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(csrfHeader, testCSRF)
+		if tok != "" {
+			req.Header.Set(runTokenHeader, tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("token %q: status %d want 401", tok, resp.StatusCode)
+		}
+		var body map[string]any
+		json.NewDecoder(resp.Body).Decode(&body)
+		if body["need_run_token"] != true {
+			t.Fatalf("token %q: body %v", tok, body)
+		}
+	}
+	if fake.LastCwd != "" {
+		t.Fatal("agent launched without the run token")
+	}
+
+	// Valid token: the agent starts.
+	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(`{"agent":"cursor"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(csrfHeader, testCSRF)
+	req.Header.Set(runTokenHeader, "sekrit")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("valid token: status %d", resp.StatusCode)
+	}
+	time.Sleep(20 * time.Millisecond) // let the Wait goroutine finish
+}
+
+func TestRunCancelRequiresRunToken(t *testing.T) {
+	st := newStore(t)
+	tk, _ := st.CreateTask(store.CreateTaskParams{Title: "t"})
+	srv := httptest.NewServer(newHandlerCfg(Config{Store: st, RunToken: "sekrit"}))
+	defer srv.Close()
+	url := srv.URL + "/api/tasks/" + strconv.FormatInt(tk.ID, 10) + "/run/cancel"
+	resp := doMutate(t, http.MethodPost, url, "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status %d want 401", resp.StatusCode)
+	}
+	var body map[string]any
+	json.NewDecoder(resp.Body).Decode(&body)
+	if body["need_run_token"] != true {
+		t.Fatalf("body %v", body)
+	}
+}
+
 func TestMutationRequiresCSRF(t *testing.T) {
 	st := newStore(t)
 	srv := httptest.NewServer(newHandler(st))
