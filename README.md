@@ -12,6 +12,8 @@
   <a href="https://buymeacoffee.com/samlo122"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy me a coffee" /></a>
 </p>
 
+![Demo — spawn an agent on a task from the web UI, watch its progress stream onto the card, then close out to the activity feed](docs/demo.gif)
+
 ![Web UI screenshot](docs/screenshot.png)
 
 A cross-client kanban board for AI agents. One central board, shared by every
@@ -20,7 +22,8 @@ Antigravity. Not a todo list one agent scribbles in: a **coordination bus** for
 a fleet of heterogeneous agents.
 
 Single Go binary = MCP server + terminal CLI + local web UI. SQLite storage, no
-runtime dependencies, no auth, fully local.
+runtime dependencies, fully local — loopback by default, with agent launches
+token-gated on non-loopback binds.
 
 ## Install
 
